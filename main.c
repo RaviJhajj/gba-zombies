@@ -7,138 +7,257 @@
 #define REG_KEYINPUT    *(volatile uint16_t*)0x04000130
 #define VRAM            ((volatile uint16_t*)0x06000000)
 
+// Audio Registers
+#define REG_SOUNDCNT_L  *(volatile uint16_t*)0x04000080
+#define REG_SOUNDCNT_H  *(volatile uint16_t*)0x04000082
+#define REG_SOUNDCNT_X  *(volatile uint16_t*)0x04000084
+#define REG_SOUND1CNT_L *(volatile uint16_t*)0x04000060
+#define REG_SOUND1CNT_H *(volatile uint16_t*)0x04000062
+#define REG_SOUND1CNT_X *(volatile uint16_t*)0x04000064
+#define REG_SOUND4CNT_L *(volatile uint16_t*)0x04000078
+#define REG_SOUND4CNT_H *(volatile uint16_t*)0x0400007C
+
 #define MODE_3          0x0003
 #define BG2_ENABLE      0x0400
 
 #define SCREEN_WIDTH    240
 #define SCREEN_HEIGHT   160
 
-// Keys (Active Low: 0 = pressed, 1 = released)
+// Keys (Active Low)
 #define KEY_A           (1 << 0)
-#define KEY_B           (1 << 1)
+#define KEY_START       (1 << 3)
+#define KEY_SELECT      (1 << 2)
 #define KEY_RIGHT       (1 << 4)
 #define KEY_LEFT        (1 << 5)
 #define KEY_UP          (1 << 6)
 #define KEY_DOWN        (1 << 7)
+#define KEY_R           (1 << 8)
 
-// 15-bit BGR Color Macro
+// Colors
 #define RGB15(r, g, b)  ((uint16_t)(((r) & 0x1F) | (((g) & 0x1F) << 5) | (((b) & 0x1F) << 10)))
-
 #define COLOR_BLACK     RGB15(0, 0, 0)
 #define COLOR_WHITE     RGB15(31, 31, 31)
 #define COLOR_RED       RGB15(31, 0, 0)
 #define COLOR_GREEN     RGB15(0, 31, 0)
 #define COLOR_BLUE      RGB15(0, 15, 31)
 #define COLOR_YELLOW    RGB15(31, 31, 0)
-#define COLOR_DARKGRAY  RGB15(6, 6, 6)
+#define COLOR_ORANGE    RGB15(31, 15, 0)
+#define COLOR_DARKGRAY  RGB15(4, 4, 4)
 
-// --- Game Constants & Structs ---
-#define MAX_ZOMBIES 20
-#define MAX_BULLETS 10
+// Game States
+enum { STATE_START, STATE_PLAY, STATE_PAUSE, STATE_GAMEOVER };
+
+// --- Minimal 3x5 Pixel Font (Encoded in Octal) ---
+const uint16_t font[38] = {
+    075557, 022222, 071747, 071717, 055711, 074717, 074757, 071111, 075757, 075717, // 0-9
+    025755, 065656, 074447, 065556, 074747, 074744, 074557, 055755, 072227, 031153, // A-J
+    055655, 044447, 057555, 065555, 075557, 075744, 075573, 075765, 074717, 072222, // K-T
+    055557, 055552, 055575, 055255, 055222, 071247, 000000, 000200                  // U-Z, Space, Period
+};
+
+// --- Entities ---
+#define MAX_ZOMBIES 25
+#define MAX_BULLETS 20
 
 typedef struct {
-    int x, y;
-    int prev_x, prev_y;
-    int w, h;
-    int dx, dy; // facing direction
-    int health;
-    int iframes;
+    int x, y, prev_x, prev_y, w, h;
+    int dx, dy;
+    int health, iframes;
+    int weapon; // 0 = Pistol, 1 = Shotgun
 } Player;
 
 typedef struct {
-    int x, y;
-    int prev_x, prev_y;
-    int w, h;
-    int health;
+    int x, y, prev_x, prev_y, w, h;
+    int health, type, damage, speed_delay;
     bool active;
 } Zombie;
 
 typedef struct {
-    int x, y;
-    int prev_x, prev_y;
-    int dx, dy;
+    int x, y, prev_x, prev_y, dx, dy;
     bool active;
 } Bullet;
 
+// --- Globals ---
+int game_state = STATE_START;
+int score = 0;
+int highscore = 0;
+int wave = 1;
+bool force_redraw = true;
+
+// Input tracking for edge-detection (single press)
+uint16_t prev_keys = 0x03FF;
+uint16_t curr_keys = 0x03FF;
+
+// --- Audio Functions ---
+void init_audio() {
+    REG_SOUNDCNT_X = 0x80; // Turn on sound chip
+    REG_SOUNDCNT_L = 0x1177; // Max volume L/R
+    REG_SOUNDCNT_H = 0x0200; // 100% volume mix
+}
+void play_sound_pistol() {
+    REG_SOUND1CNT_L = 0x0053; // Sweep
+    REG_SOUND1CNT_H = 0x8260; // Envelope
+    REG_SOUND1CNT_X = 0x8500 | 2000; // Freq + trigger
+}
+void play_sound_shotgun() {
+    REG_SOUND4CNT_L = 0x1F00; // Noise Envelope
+    REG_SOUND4CNT_H = 0x8000 | 0x0022; // Low noise + trigger
+}
+void play_sound_hitmarker() {
+    REG_SOUND4CNT_L = 0x1500; // Short envelope
+    REG_SOUND4CNT_H = 0x8000 | 0x0001; // High pitch noise
+}
+void play_sound_zombie_bite() {
+    REG_SOUND4CNT_L = 0x1E00; // Long envelope
+    REG_SOUND4CNT_H = 0x8000 | 0x0055; // Low crunchy noise
+}
+void play_sound_gameover() {
+    REG_SOUND1CNT_L = 0x0077;
+    REG_SOUND1CNT_H = 0x8770;
+    REG_SOUND1CNT_X = 0x8500 | 1000;
+}
+
 // --- Helper Functions ---
-static inline void vsync(void) {
+static inline void vsync() {
     while (REG_VCOUNT >= 160);
     while (REG_VCOUNT < 160);
 }
 
-static inline bool key_pressed(uint16_t key) {
-    return !(REG_KEYINPUT & key);
-}
-
 void draw_rect(int x, int y, int w, int h, uint16_t color) {
     for (int j = 0; j < h; j++) {
-        int py = y + j;
-        if (py < 0 || py >= SCREEN_HEIGHT) continue;
+        if (y + j < 0 || y + j >= SCREEN_HEIGHT) continue;
         for (int i = 0; i < w; i++) {
-            int px = x + i;
-            if (px < 0 || px >= SCREEN_WIDTH) continue;
-            VRAM[py * SCREEN_WIDTH + px] = color;
+            if (x + i < 0 || x + i >= SCREEN_WIDTH) continue;
+            VRAM[(y + j) * SCREEN_WIDTH + (x + i)] = color;
         }
     }
 }
 
-// Simple deterministic random generator
+void draw_char(char c, int x, int y, uint16_t color) {
+    int idx = 36; // Space
+    if (c >= '0' && c <= '9') idx = c - '0';
+    else if (c >= 'A' && c <= 'Z') idx = c - 'A' + 10;
+    else if (c == ':') idx = 37;
+
+    uint16_t bits = font[idx];
+    for (int row = 0; row < 5; row++) {
+        for (int col = 0; col < 3; col++) {
+            // Read 3 bits per row, starting from the top (bits 12-14)
+            if ((bits >> (12 - row * 3 + (2 - col))) & 1) {
+                draw_rect(x + col*2, y + row*2, 2, 2, color); // 2x scale
+            }
+        }
+    }
+}
+
+void draw_text(const char* str, int x, int y, uint16_t color) {
+    while (*str) {
+        draw_char(*str, x, y, color);
+        x += 8; // Move cursor right
+        str++;
+    }
+}
+
 static uint32_t rng_state = 123456789;
-uint32_t simple_rand(void) {
+uint32_t simple_rand() {
     rng_state ^= rng_state << 13;
     rng_state ^= rng_state >> 17;
     rng_state ^= rng_state << 5;
     return rng_state;
 }
 
-// Check rectangular collision
 bool check_collision(int x1, int y1, int w1, int h1, int x2, int y2, int w2, int h2) {
     return (x1 < x2 + w2 && x1 + w1 > x2 && y1 < y2 + h2 && y1 + h1 > y2);
 }
 
 // --- Main Program ---
 int main(void) {
-    // Set Video Mode 3 with Background 2 active
     REG_DISPCNT = MODE_3 | BG2_ENABLE;
+    init_audio();
 
-    // Fill screen with dark arena floor
-    for (int i = 0; i < SCREEN_WIDTH * SCREEN_HEIGHT; i++) {
-        VRAM[i] = COLOR_DARKGRAY;
+    Player player;
+    Zombie zombies[MAX_ZOMBIES];
+    Bullet bullets[MAX_BULLETS];
+
+    int zombies_to_spawn, zombies_spawned, zombies_alive;
+    int shoot_cooldown = 0, zombie_move_timer = 0;
+
+    // Reset game logic wrapper
+    void reset_game() {
+        player = (Player){120, 80, 120, 80, 6, 6, 0, -1, 5, 0, 0};
+        for (int i = 0; i < MAX_ZOMBIES; i++) zombies[i].active = false;
+        for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = false;
+        wave = 1; score = 0;
+        zombies_to_spawn = 4; zombies_spawned = 0; zombies_alive = 0;
+        force_redraw = true;
     }
 
-    // Initialize Entities
-    Player player = {
-        .x = 120, .y = 80,
-        .prev_x = 120, .prev_y = 80,
-        .w = 6, .h = 6,
-        .dx = 0, .dy = -1,
-        .health = 5,
-        .iframes = 0
-    };
-
-    Zombie zombies[MAX_ZOMBIES];
-    for (int i = 0; i < MAX_ZOMBIES; i++) zombies[i].active = false;
-
-    Bullet bullets[MAX_BULLETS];
-    for (int i = 0; i < MAX_BULLETS; i++) bullets[i].active = false;
-
-    int wave = 1;
-    int zombies_to_spawn = 4;
-    int zombies_spawned = 0;
-    int zombies_alive = 0;
-    int shoot_cooldown = 0;
-    int zombie_move_timer = 0;
+    reset_game();
 
     while (1) {
         vsync();
 
-        // Game Over screen
-        if (player.health <= 0) {
-            draw_rect(100, 75, 40, 10, COLOR_RED);
+        curr_keys = ~REG_KEYINPUT & 0x03FF;
+        uint16_t keys_pressed = curr_keys & ~prev_keys;
+        prev_keys = curr_keys;
+
+        // --- STATE: START ---
+        if (game_state == STATE_START) {
+            if (force_redraw) {
+                draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BLACK);
+                draw_text("ZOMBIE SURVIVAL", 60, 40, COLOR_RED);
+                draw_text("PRESS START", 76, 80, COLOR_WHITE);
+                force_redraw = false;
+            }
+            if (keys_pressed & KEY_START) {
+                game_state = STATE_PLAY;
+                force_redraw = true;
+                reset_game();
+            }
             continue;
         }
 
-        // --- Wave Manager ---
+        // --- STATE: GAMEOVER ---
+        if (game_state == STATE_GAMEOVER) {
+            if (force_redraw) {
+                draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BLACK);
+                draw_text("GAME OVER", 84, 50, COLOR_RED);
+                draw_text("PRESS START", 76, 90, COLOR_WHITE);
+                force_redraw = false;
+            }
+            if (keys_pressed & KEY_START) {
+                game_state = STATE_START;
+                force_redraw = true;
+            }
+            continue;
+        }
+
+        // --- STATE: PAUSED ---
+        if (game_state == STATE_PAUSE) {
+            if (force_redraw) {
+                draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BLACK);
+                draw_text("PAUSED", 96, 40, COLOR_YELLOW);
+                draw_text("START TO RESUME", 60, 80, COLOR_WHITE);
+                draw_text("SELECT TO RESTART", 52, 100, COLOR_WHITE);
+                force_redraw = false;
+            }
+            if (keys_pressed & KEY_START) { game_state = STATE_PLAY; force_redraw = true; }
+            if (keys_pressed & KEY_SELECT) { game_state = STATE_START; force_redraw = true; }
+            continue;
+        }
+
+        // --- STATE: PLAYING ---
+        if (keys_pressed & KEY_START) { game_state = STATE_PAUSE; force_redraw = true; continue; }
+
+        if (force_redraw) {
+            draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_DARKGRAY);
+            force_redraw = false;
+        }
+
+        // Weapon Switch (R Button)
+        if (keys_pressed & KEY_R) player.weapon = !player.weapon;
+
+        // Wave Manager
         if (zombies_alive == 0 && zombies_spawned >= zombies_to_spawn) {
             wave++;
             zombies_to_spawn = 4 + (wave * 2);
@@ -146,134 +265,151 @@ int main(void) {
             zombies_spawned = 0;
         }
 
-        // Spawn a zombie if needed
+        // Spawner
         if (zombies_spawned < zombies_to_spawn && (simple_rand() % 40 == 0)) {
             for (int i = 0; i < MAX_ZOMBIES; i++) {
                 if (!zombies[i].active) {
                     zombies[i].active = true;
-                    zombies[i].health = (wave > 3) ? 2 : 1;
-                    zombies[i].w = 6;
-                    zombies[i].h = 6;
+                    zombies[i].w = 6; zombies[i].h = 6;
+                    
+                    // Zombie Type Logic (Mix in Tanks at higher waves)
+                    if (wave >= 3 && (simple_rand() % 5) == 0) {
+                        zombies[i].type = 1; // Tank
+                        zombies[i].health = 4 + (wave/3);
+                        zombies[i].damage = 2;
+                        zombies[i].speed_delay = 4; // Slower
+                    } else {
+                        zombies[i].type = 0; // Normal
+                        zombies[i].health = (wave > 3) ? 2 : 1;
+                        zombies[i].damage = 1;
+                        zombies[i].speed_delay = 2; // Faster
+                    }
 
-                    // Spawn on an edge
                     int edge = simple_rand() % 4;
                     if (edge == 0) { zombies[i].x = simple_rand() % SCREEN_WIDTH; zombies[i].y = 12; }
                     else if (edge == 1) { zombies[i].x = simple_rand() % SCREEN_WIDTH; zombies[i].y = SCREEN_HEIGHT - 10; }
                     else if (edge == 2) { zombies[i].x = 4; zombies[i].y = simple_rand() % SCREEN_HEIGHT; }
                     else { zombies[i].x = SCREEN_WIDTH - 10; zombies[i].y = simple_rand() % SCREEN_HEIGHT; }
 
-                    zombies[i].prev_x = zombies[i].x;
-                    zombies[i].prev_y = zombies[i].y;
-                    zombies_spawned++;
-                    zombies_alive++;
+                    zombies[i].prev_x = zombies[i].x; zombies[i].prev_y = zombies[i].y;
+                    zombies_spawned++; zombies_alive++;
                     break;
                 }
             }
         }
 
-        // --- Handle Input & Player Movement ---
-        player.prev_x = player.x;
-        player.prev_y = player.y;
+        // Player Movement
+        player.prev_x = player.x; player.prev_y = player.y;
+        if (curr_keys & KEY_LEFT)  { player.x--; player.dx = -1; player.dy = 0; }
+        if (curr_keys & KEY_RIGHT) { player.x++; player.dx = 1;  player.dy = 0; }
+        if (curr_keys & KEY_UP)    { player.y--; player.dx = 0;  player.dy = -1; }
+        if (curr_keys & KEY_DOWN)  { player.y++; player.dx = 0;  player.dy = 1; }
 
-        int move_x = 0;
-        int move_y = 0;
-
-        if (key_pressed(KEY_LEFT))  { move_x = -1; player.dx = -1; player.dy = 0; }
-        if (key_pressed(KEY_RIGHT)) { move_x = 1;  player.dx = 1;  player.dy = 0; }
-        if (key_pressed(KEY_UP))    { move_y = -1; player.dx = 0;  player.dy = -1; }
-        if (key_pressed(KEY_DOWN))  { move_y = 1;  player.dx = 0;  player.dy = 1; }
-
-        player.x += move_x;
-        player.y += move_y;
-
-        // Arena boundary collision
         if (player.x < 4) player.x = 4;
         if (player.x > SCREEN_WIDTH - 10) player.x = SCREEN_WIDTH - 10;
         if (player.y < 12) player.y = 12;
         if (player.y > SCREEN_HEIGHT - 10) player.y = SCREEN_HEIGHT - 10;
 
-        // Firing Mechanics (Key A)
+        // Firing Logic
         if (shoot_cooldown > 0) shoot_cooldown--;
-        if (key_pressed(KEY_A) && shoot_cooldown == 0) {
-            for (int i = 0; i < MAX_BULLETS; i++) {
-                if (!bullets[i].active) {
-                    bullets[i].active = true;
-                    bullets[i].x = player.x + 2;
-                    bullets[i].y = player.y + 2;
-                    bullets[i].prev_x = bullets[i].x;
-                    bullets[i].prev_y = bullets[i].y;
-                    bullets[i].dx = player.dx * 3;
-                    bullets[i].dy = player.dy * 3;
-                    shoot_cooldown = 12; // rate of fire
-                    break;
+        if ((curr_keys & KEY_A) && shoot_cooldown == 0) {
+            if (player.weapon == 0) { // Pistol
+                for (int i = 0; i < MAX_BULLETS; i++) {
+                    if (!bullets[i].active) {
+                        bullets[i].active = true;
+                        bullets[i].x = player.x + 2; bullets[i].y = player.y + 2;
+                        bullets[i].dx = player.dx * 4; bullets[i].dy = player.dy * 4;
+                        shoot_cooldown = 12;
+                        play_sound_pistol();
+                        break;
+                    }
                 }
+            } else { // Shotgun
+                int spawn_count = 0;
+                play_sound_shotgun();
+                for (int i = 0; i < MAX_BULLETS && spawn_count < 4; i++) {
+                    if (!bullets[i].active) {
+                        bullets[i].active = true;
+                        bullets[i].x = player.x + 2; bullets[i].y = player.y + 2;
+                        
+                        // Spread Math
+                        if (spawn_count == 0) { bullets[i].dx = player.dx*3 + player.dy; bullets[i].dy = player.dy*3 + player.dx; } // Diagonal 1
+                        else if (spawn_count == 1) { bullets[i].dx = player.dx*3 - player.dy; bullets[i].dy = player.dy*3 - player.dx; } // Diagonal 2
+                        else if (spawn_count == 2) { bullets[i].dx = player.dx*4; bullets[i].dy = player.dy*4; } // Forward Fast
+                        else { bullets[i].dx = player.dx*2; bullets[i].dy = player.dy*2; } // Forward Slow
+                        
+                        spawn_count++;
+                    }
+                }
+                shoot_cooldown = 32; // Slower cocking speed
             }
         }
 
         if (player.iframes > 0) player.iframes--;
 
-        // --- Update Bullets ---
+        // Update Bullets
         for (int i = 0; i < MAX_BULLETS; i++) {
             if (!bullets[i].active) continue;
+            bullets[i].prev_x = bullets[i].x; bullets[i].prev_y = bullets[i].y;
+            bullets[i].x += bullets[i].dx; bullets[i].y += bullets[i].dy;
 
-            bullets[i].prev_x = bullets[i].x;
-            bullets[i].prev_y = bullets[i].y;
-            bullets[i].x += bullets[i].dx;
-            bullets[i].y += bullets[i].dy;
-
-            // Remove if offscreen
-            if (bullets[i].x < 2 || bullets[i].x > SCREEN_WIDTH - 4 ||
-                bullets[i].y < 10 || bullets[i].y > SCREEN_HEIGHT - 4) {
+            if (bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH || bullets[i].y < 10 || bullets[i].y > SCREEN_HEIGHT) {
                 bullets[i].active = false;
                 draw_rect(bullets[i].prev_x, bullets[i].prev_y, 2, 2, COLOR_DARKGRAY);
                 continue;
             }
 
-            // Bullet vs Zombie Collision
             for (int z = 0; z < MAX_ZOMBIES; z++) {
                 if (!zombies[z].active) continue;
                 if (check_collision(bullets[i].x, bullets[i].y, 2, 2, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
                     bullets[i].active = false;
                     draw_rect(bullets[i].prev_x, bullets[i].prev_y, 2, 2, COLOR_DARKGRAY);
+                    
                     zombies[z].health--;
+                    play_sound_hitmarker();
+                    
                     if (zombies[z].health <= 0) {
                         zombies[z].active = false;
                         draw_rect(zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h, COLOR_DARKGRAY);
                         zombies_alive--;
+                        score += (zombies[z].type == 1) ? 20 : 10;
+                        if (score > highscore) highscore = score;
                     }
                     break;
                 }
             }
         }
 
-        // --- Update Zombies ---
+        // Update Zombies
         zombie_move_timer++;
-        bool move_zombie_step = (zombie_move_timer % 3 == 0); // slower than player
-
         for (int i = 0; i < MAX_ZOMBIES; i++) {
             if (!zombies[i].active) continue;
+            zombies[i].prev_x = zombies[i].x; zombies[i].prev_y = zombies[i].y;
 
-            zombies[i].prev_x = zombies[i].x;
-            zombies[i].prev_y = zombies[i].y;
-
-            if (move_zombie_step) {
-                if (zombies[i].x < player.x) zombies[i].x++;
-                else if (zombies[i].x > player.x) zombies[i].x--;
-
-                if (zombies[i].y < player.y) zombies[i].y++;
-                else if (zombies[i].y > player.y) zombies[i].y--;
+            if (zombie_move_timer % zombies[i].speed_delay == 0) {
+                // Introduce random drift to prevent herding lines
+                int r = simple_rand() % 4;
+                if (r != 0 && zombies[i].x < player.x) zombies[i].x++;
+                if (r != 1 && zombies[i].x > player.x) zombies[i].x--;
+                if (r != 2 && zombies[i].y < player.y) zombies[i].y++;
+                if (r != 3 && zombies[i].y > player.y) zombies[i].y--;
             }
 
             // Zombie hits player
             if (player.iframes == 0 && check_collision(player.x, player.y, player.w, player.h, zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
-                player.health--;
-                player.iframes = 30; // 0.5s invulnerability
+                player.health -= zombies[i].damage;
+                player.iframes = 45; 
+                play_sound_zombie_bite();
+
+                if (player.health <= 0) {
+                    play_sound_gameover();
+                    game_state = STATE_GAMEOVER;
+                    force_redraw = true;
+                }
             }
         }
 
         // --- Render Pass ---
-
-        // 1. Clear old positions
         draw_rect(player.prev_x, player.prev_y, player.w, player.h, COLOR_DARKGRAY);
         for (int i = 0; i < MAX_BULLETS; i++) {
             if (bullets[i].active) draw_rect(bullets[i].prev_x, bullets[i].prev_y, 2, 2, COLOR_DARKGRAY);
@@ -282,29 +418,36 @@ int main(void) {
             if (zombies[i].active) draw_rect(zombies[i].prev_x, zombies[i].prev_y, zombies[i].w, zombies[i].h, COLOR_DARKGRAY);
         }
 
-        // 2. Draw HUD (Health bar & Wave pips)
-        draw_rect(0, 0, SCREEN_WIDTH, 10, COLOR_BLACK);
-        // Player Health Bar (Green)
-        draw_rect(4, 3, player.health * 6, 4, COLOR_GREEN);
-        // Current Wave Indicators (Yellow dots)
-        for (int w = 0; w < wave && w < 10; w++) {
-            draw_rect(SCREEN_WIDTH - 12 - (w * 6), 3, 4, 4, COLOR_YELLOW);
-        }
+        // HUD (Score, Highscore, Health, Weapon)
+        draw_rect(0, 0, SCREEN_WIDTH, 12, COLOR_BLACK);
+        
+        // Convert score to string manually
+        char sc_str[4] = {(score/100)%10+'0', (score/10)%10+'0', score%10+'0', 0};
+        draw_text("SCR:", 2, 2, COLOR_WHITE);
+        draw_text(sc_str, 34, 2, COLOR_YELLOW);
 
-        // 3. Draw Bullets (White)
+        char hi_str[4] = {(highscore/100)%10+'0', (highscore/10)%10+'0', highscore%10+'0', 0};
+        draw_text("HI:", 70, 2, COLOR_WHITE);
+        draw_text(hi_str, 94, 2, COLOR_ORANGE);
+
+        draw_text(player.weapon == 0 ? "PISTOL" : "SHOTGUN", 130, 2, COLOR_WHITE);
+
+        // Health Bar
+        if (player.health > 0) draw_rect(SCREEN_WIDTH - (player.health * 6) - 4, 3, player.health * 6, 6, COLOR_GREEN);
+
+        // Draw Bullets & Zombies
         for (int i = 0; i < MAX_BULLETS; i++) {
             if (bullets[i].active) draw_rect(bullets[i].x, bullets[i].y, 2, 2, COLOR_WHITE);
         }
-
-        // 4. Draw Zombies (Red)
         for (int i = 0; i < MAX_ZOMBIES; i++) {
-            if (zombies[i].active) draw_rect(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h, COLOR_RED);
+            if (zombies[i].active) {
+                uint16_t z_color = (zombies[i].type == 1) ? COLOR_ORANGE : COLOR_RED; // Tanks are orange
+                draw_rect(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h, z_color);
+            }
         }
 
-        // 5. Draw Player (Blue; flashes white when hit)
-        uint16_t player_color = (player.iframes % 4 > 1) ? COLOR_WHITE : COLOR_BLUE;
+        uint16_t player_color = (player.iframes % 6 > 2) ? COLOR_WHITE : COLOR_BLUE;
         draw_rect(player.x, player.y, player.w, player.h, player_color);
     }
-
     return 0;
 }
