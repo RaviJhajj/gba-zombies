@@ -1,9 +1,10 @@
 DEVKITPRO := /opt/devkitpro
 DEVKITARM := $(DEVKITPRO)/devkitARM
+TOOLS     := $(DEVKITPRO)/tools
 
 CC        := $(DEVKITARM)/bin/arm-none-eabi-gcc
 OBJCOPY   := $(DEVKITARM)/bin/arm-none-eabi-objcopy
-GBAFIX    := $(DEVKITARM)/bin/gbafix
+GBAFIX    := $(TOOLS)/bin/gbafix
 
 SRCS      := main.c
 OBJS      := $(SRCS:.c=.o)
