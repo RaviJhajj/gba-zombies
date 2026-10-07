@@ -1,27 +1,46 @@
 # Define the toolchain and paths
-DEVKITARM := /opt/devkitpro/devkitARM
-CC := $(DEVKITARM)/bin/arm-none-eabi-gcc
-CXX := $(DEVKITARM)/bin/arm-none-eabi-g++
-AR := $(DEVKITARM)/bin/arm-none-eabi-ar
-OBJCOPY := $(DEVKITARM)/bin/arm-none-eabi-objcopy
+DEVKITPRO := /opt/devkitpro
+DEVKITARM := $(DEVKITPRO)/devkitARM
+LIBGBA    := $(DEVKITPRO)/libgba
 
-# Define the source and object files
-SRCS := main.c
-OBJS := $(SRCS:.c=.o)
+CC        := $(DEVKITARM)/bin/arm-none-eabi-gcc
+OBJCOPY   := $(DEVKITARM)/bin/arm-none-eabi-objcopy
+GBAFIX    := $(DEVKITARM)/bin/gbafix
 
-# Define the output ROM file
-TARGET := game.gba
+# Source and Target names
+SRCS      := main.c
+OBJS      := $(SRCS:.c=.o)
+ELF       := game.elf
+TARGET    := game.gba
 
 # Compiler flags
-CFLAGS := -Wall -O2 -g -mthumb -mtune=arm7tdmi -mno-thumb-interwork -fomit-frame-pointer -funroll-loops -ffunction-sections -fdata-sections -Wl,-Map=output.map -Tgba_flash.ld
+# Includes libgba headers and sets standard GBA architecture flags
+CFLAGS    := -mthumb -mthumb-interwork -O2 -Wall -fomit-frame-pointer \
+             -ffunction-sections -fdata-sections \
+             -I$(LIBGBA)/include
 
 # Linker flags
-LDFLAGS := -specs=gba.specs -nostartfiles -nodefaultlibs -lgcc
+# Uses standard GBA spec, garbage-collects unused sections, links libgba
+LDFLAGS   := -mthumb -mthumb-interwork -specs=gba.specs \
+             -Wl,--gc-sections \
+             -L$(LIBGBA)/lib -lgba
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) $(OBJS) -o $@ $(LDFLAGS)
+$(TARGET): $(ELF)
+	$(OBJCOPY) -O binary $< $@
+	$(GBAFIX) $@ -tZOMBIES
+
+$(ELF): $(OBJS)
+	$(CC) $(OBJS) $(LDFLAGS) -o $@
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f $(OBJS) $(ELF) $(TARGET) output.map
+
+.PHONY: all clean
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
