@@ -78,10 +78,19 @@ static inline void vsync() {
     while (REG_VCOUNT < 160);
 }
 
-// Highly Optimized Drawing Routine (Prevents Screen Tearing)
+// Optimized Drawing Routine with HUD Protection
 void draw_rect(int x, int y, int w, int h, uint16_t color) {
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
+    
+    // --- HUD PROTECTION ---
+    // Prevents the background gray from ever erasing the black HUD bar
+    if (color == COLOR_DARKGRAY && y < 10) {
+        int diff = 10 - y;
+        y = 10;
+        h -= diff;
+    }
+
     if (x + w > SCREEN_WIDTH) w = SCREEN_WIDTH - x;
     if (y + h > SCREEN_HEIGHT) h = SCREEN_HEIGHT - y;
     if (w <= 0 || h <= 0) return;
@@ -191,10 +200,10 @@ int main(void) {
                         }
 
                         int edge = simple_rand() % 4;
-                        if (edge == 0) { zombies[i].x = simple_rand() % SCREEN_WIDTH; zombies[i].y = 12; }
+                        if (edge == 0) { zombies[i].x = simple_rand() % SCREEN_WIDTH; zombies[i].y = 14; }
                         else if (edge == 1) { zombies[i].x = simple_rand() % SCREEN_WIDTH; zombies[i].y = SCREEN_HEIGHT - 10; }
-                        else if (edge == 2) { zombies[i].x = 4; zombies[i].y = 12 + simple_rand() % (SCREEN_HEIGHT - 22); }
-                        else { zombies[i].x = SCREEN_WIDTH - 10; zombies[i].y = 12 + simple_rand() % (SCREEN_HEIGHT - 22); }
+                        else if (edge == 2) { zombies[i].x = 4; zombies[i].y = 14 + simple_rand() % (SCREEN_HEIGHT - 24); }
+                        else { zombies[i].x = SCREEN_WIDTH - 10; zombies[i].y = 14 + simple_rand() % (SCREEN_HEIGHT - 24); }
 
                         zombies[i].prev_x = zombies[i].x; zombies[i].prev_y = zombies[i].y;
                         zombies_spawned++; zombies_alive++;
@@ -211,7 +220,7 @@ int main(void) {
 
             if (player.x < 2) player.x = 2;
             if (player.x > SCREEN_WIDTH - 8) player.x = SCREEN_WIDTH - 8;
-            if (player.y < 12) player.y = 12; 
+            if (player.y < 14) player.y = 14; // Strict boundary to never overlap HUD
             if (player.y > SCREEN_HEIGHT - 8) player.y = SCREEN_HEIGHT - 8;
 
             if (shoot_cooldown > 0) shoot_cooldown--;
@@ -226,21 +235,23 @@ int main(void) {
                             break;
                         }
                     }
-                } else { // Shotgun
+                } else { // Shotgun (4-way blast)
                     int spawn_count = 0;
                     for (int i = 0; i < MAX_BULLETS && spawn_count < 4; i++) {
                         if (!bullets[i].active) {
                             bullets[i].active = true;
                             bullets[i].x = player.x + 2; bullets[i].y = player.y + 2;
                             
-                            if (spawn_count == 0) { bullets[i].dx = player.dx*3 + player.dy; bullets[i].dy = player.dy*3 + player.dx; }
-                            else if (spawn_count == 1) { bullets[i].dx = player.dx*3 - player.dy; bullets[i].dy = player.dy*3 - player.dx; }
-                            else if (spawn_count == 2) { bullets[i].dx = player.dx*4; bullets[i].dy = player.dy*4; }
-                            else { bullets[i].dx = player.dx*2; bullets[i].dy = player.dy*2; }
+                            // Shoots exactly Up, Down, Left, and Right simultaneously
+                            if (spawn_count == 0) { bullets[i].dx = 0; bullets[i].dy = -4; } 
+                            else if (spawn_count == 1) { bullets[i].dx = 0; bullets[i].dy = 4; } 
+                            else if (spawn_count == 2) { bullets[i].dx = -4; bullets[i].dy = 0; } 
+                            else { bullets[i].dx = 4; bullets[i].dy = 0; } 
+                            
                             spawn_count++;
                         }
                     }
-                    shoot_cooldown = 45; // Faster shotgun firing speed
+                    shoot_cooldown = 45; // Maintains your requested speed
                 }
             }
 
@@ -251,9 +262,11 @@ int main(void) {
                 bullets[i].prev_x = bullets[i].x; bullets[i].prev_y = bullets[i].y;
                 bullets[i].x += bullets[i].dx; bullets[i].y += bullets[i].dy;
 
-                // Despawn bullet gracefully out of bounds
+                // Safely despawn bullet and mark exact location for cleanup
                 if (bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH || bullets[i].y < 10 || bullets[i].y > SCREEN_HEIGHT) {
                     bullets[i].active = false;
+                    bullets[i].prev_x = bullets[i].x;
+                    bullets[i].prev_y = bullets[i].y;
                     continue;
                 }
 
@@ -261,10 +274,14 @@ int main(void) {
                     if (!zombies[z].active) continue;
                     if (check_collision(bullets[i].x, bullets[i].y, 2, 2, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
                         bullets[i].active = false;
-                        zombies[z].health--;
+                        bullets[i].prev_x = bullets[i].x; // Ensure bullet ghost is cleaned up
+                        bullets[i].prev_y = bullets[i].y;
                         
+                        zombies[z].health--;
                         if (zombies[z].health <= 0) {
                             zombies[z].active = false;
+                            zombies[z].prev_x = zombies[z].x; // Ensure zombie corpse is cleaned up instantly
+                            zombies[z].prev_y = zombies[z].y;
                             zombies_alive--;
                         }
                         break;
@@ -310,7 +327,6 @@ int main(void) {
                 draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BLACK);
                 draw_text("GAME OVER", 84, 40, COLOR_RED);
                 
-                // Construct "ROUND X" text dynamically
                 char wave_text[] = "ROUND 00";
                 wave_text[6] = (wave / 10) + '0';
                 wave_text[7] = (wave % 10) + '0';
@@ -333,6 +349,7 @@ int main(void) {
         else { // STATE_PLAY
             if (force_redraw) {
                 draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_DARKGRAY);
+                draw_rect(0, 0, SCREEN_WIDTH, 10, COLOR_BLACK); // Draw permanent HUD background once
                 force_redraw = false;
             } else {
                 // Safely erase previous entity coordinates
@@ -352,10 +369,14 @@ int main(void) {
                 }
             }
 
-            // HUD Drawing
-            draw_rect(0, 0, SCREEN_WIDTH, 10, COLOR_BLACK);
+            // HUD Refresh (Only redraws the dynamic dots instead of the whole black bar)
+            draw_rect(2, 2, 40, 6, COLOR_BLACK); 
             draw_rect(4, 3, player.health * 6, 4, COLOR_GREEN); 
+            
+            draw_rect(SCREEN_WIDTH / 2 - 4, 2, 8, 6, COLOR_BLACK);
             draw_rect(SCREEN_WIDTH / 2 - 2, 3, 4, 4, player.weapon == 0 ? COLOR_WHITE : COLOR_ORANGE);
+            
+            draw_rect(150, 2, 90, 6, COLOR_BLACK); 
             for (int w = 0; w < wave && w < 10; w++) {
                 draw_rect(SCREEN_WIDTH - 12 - (w * 6), 3, 4, 4, COLOR_YELLOW);
             }
@@ -377,7 +398,7 @@ int main(void) {
             if (player.dx > 0) dir_x += 2;
             if (player.dy < 0) dir_y -= 2;
             if (player.dy > 0) dir_y += 2;
-            draw_rect(dir_x, dir_y, 2, 2, COLOR_YELLOW); // Yellow dot points toward active facing side
+            draw_rect(dir_x, dir_y, 2, 2, COLOR_YELLOW); 
         }
     }
     return 0;
