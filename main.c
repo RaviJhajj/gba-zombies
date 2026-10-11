@@ -33,6 +33,7 @@
 #define COLOR_YELLOW    RGB15(31, 31, 0)
 #define COLOR_ORANGE    RGB15(31, 15, 0)
 #define COLOR_DARKGRAY  RGB15(4, 4, 4)
+#define COLOR_SKIN      RGB15(31, 22, 15) // Peach color for human heads
 
 // Game States
 enum { STATE_START, STATE_PLAY, STATE_PAUSE, STATE_GAMEOVER };
@@ -190,7 +191,7 @@ int main(void) {
                             zombies[i].type = 1; 
                             zombies[i].health = 4 + (wave/3);
                             zombies[i].damage = 2;
-                            zombies[i].speed_delay = 3; // Increased tank speed
+                            zombies[i].speed_delay = 3; 
                         } else {
                             zombies[i].type = 0; 
                             zombies[i].health = (wave > 3) ? 2 : 1;
@@ -198,7 +199,6 @@ int main(void) {
                             zombies[i].speed_delay = 2;
                         }
 
-                        // Exact arena edge spawning
                         int edge = simple_rand() % 4;
                         if (edge == 0) { zombies[i].x = simple_rand() % (SCREEN_WIDTH - 6); zombies[i].y = 10; }
                         else if (edge == 1) { zombies[i].x = simple_rand() % (SCREEN_WIDTH - 6); zombies[i].y = SCREEN_HEIGHT - 6; }
@@ -218,7 +218,6 @@ int main(void) {
             if (curr_keys & KEY_UP)    { player.y--; player.dx = 0;  player.dy = -1; }
             if (curr_keys & KEY_DOWN)  { player.y++; player.dx = 0;  player.dy = 1; }
 
-            // Exact arena field constraints
             if (player.x < 0) player.x = 0;
             if (player.x > SCREEN_WIDTH - 6) player.x = SCREEN_WIDTH - 6;
             if (player.y < 10) player.y = 10; 
@@ -253,7 +252,7 @@ int main(void) {
                             spawn_count++;
                         }
                     }
-                    shoot_cooldown = 35; // Adjusted cooldown
+                    shoot_cooldown = 35; 
                 }
             }
 
@@ -262,14 +261,12 @@ int main(void) {
             for (int i = 0; i < MAX_BULLETS; i++) {
                 if (!bullets[i].active) continue;
                 
-                // Save valid drawn coordinate BEFORE moving
                 bullets[i].prev_x = bullets[i].x; 
                 bullets[i].prev_y = bullets[i].y;
                 
                 bullets[i].x += bullets[i].dx; 
                 bullets[i].y += bullets[i].dy;
 
-                // Despawn bullet gracefully out of bounds (leaves prev_x intact so the renderer erases the old spot)
                 if (bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH - 2 || bullets[i].y < 10 || bullets[i].y > SCREEN_HEIGHT - 2) {
                     bullets[i].active = false;
                     continue;
@@ -283,7 +280,6 @@ int main(void) {
                         zombies[z].health--;
                         if (zombies[z].health <= 0) {
                             zombies[z].active = false;
-                            // Zombie hasn't moved yet this frame, so its current 'x' is safe to use for cleanup
                             zombies[z].prev_x = zombies[z].x; 
                             zombies[z].prev_y = zombies[z].y;
                             zombies_alive--;
@@ -356,6 +352,7 @@ int main(void) {
                 draw_rect(0, 0, SCREEN_WIDTH, 10, COLOR_BLACK); 
                 force_redraw = false;
             } else {
+                // Erase entire 6x6 footprint securely
                 draw_rect(player.prev_x, player.prev_y, player.w, player.h, COLOR_DARKGRAY);
                 
                 for (int i = 0; i < MAX_BULLETS; i++) {
@@ -372,36 +369,76 @@ int main(void) {
                 }
             }
 
-            // HUD Refresh
-            draw_rect(2, 2, 40, 6, COLOR_BLACK); 
-            draw_rect(4, 3, player.health * 6, 4, COLOR_GREEN); 
+            // --- HUD REFRESH ---
             
-            draw_rect(SCREEN_WIDTH / 2 - 4, 2, 8, 6, COLOR_BLACK);
-            draw_rect(SCREEN_WIDTH / 2 - 2, 3, 4, 4, player.weapon == 0 ? COLOR_WHITE : COLOR_ORANGE);
-            
-            draw_rect(150, 2, 90, 6, COLOR_BLACK); 
-            for (int w = 0; w < wave && w < 10; w++) {
-                draw_rect(SCREEN_WIDTH - 12 - (w * 6), 3, 4, 4, COLOR_YELLOW);
+            // 1. Segmented Health Bar
+            draw_rect(4, 3, 30, 4, COLOR_RED); // Background (lost health)
+            if (player.health > 0) draw_rect(4, 3, player.health * 6, 4, COLOR_GREEN); // Active health
+            for (int i = 1; i < 5; i++) {
+                draw_rect(4 + (i * 6) - 1, 3, 1, 4, COLOR_BLACK); // Vertical dividers
             }
 
-            // Draw current active entities
+            // 2. Shaped Weapon Indicator
+            int gun_x = SCREEN_WIDTH / 2 - 8;
+            draw_rect(gun_x, 2, 16, 6, COLOR_BLACK); // Clear previous gun area
+            if (player.weapon == 0) { // Pistol Shape
+                draw_rect(gun_x + 6, 3, 4, 2, COLOR_WHITE); // Barrel
+                draw_rect(gun_x + 6, 5, 2, 2, COLOR_WHITE); // Grip
+            } else { // Shotgun Shape
+                draw_rect(gun_x + 3, 3, 8, 2, COLOR_ORANGE); // Long Barrel
+                draw_rect(gun_x + 3, 5, 2, 2, COLOR_ORANGE); // Stock
+                draw_rect(gun_x + 7, 5, 3, 1, COLOR_ORANGE); // Pump Handle
+            }
+            
+            // 3. Numeric Round Counter
+            draw_rect(170, 2, 70, 6, COLOR_BLACK); 
+            draw_text("RND:", 180, 2, COLOR_WHITE);
+            char rnd_str[3] = {(wave / 10) + '0', (wave % 10) + '0', 0};
+            if (rnd_str[0] == '0') { rnd_str[0] = rnd_str[1]; rnd_str[1] = '\0'; }
+            draw_text(rnd_str, 212, 2, COLOR_YELLOW);
+
+
+            // --- ENTITY DRAWING ---
+
             for (int i = 0; i < MAX_BULLETS; i++) {
                 if (bullets[i].active) draw_rect(bullets[i].x, bullets[i].y, 2, 2, COLOR_WHITE);
             }
+            
+            // Zombies (Top-Down Body + Head + Reaching Arms)
             for (int i = 0; i < MAX_ZOMBIES; i++) {
-                if (zombies[i].active) draw_rect(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h, (zombies[i].type == 1) ? COLOR_ORANGE : COLOR_RED);
+                if (zombies[i].active) {
+                    uint16_t z_col = (zombies[i].type == 1) ? COLOR_ORANGE : COLOR_RED;
+                    
+                    draw_rect(zombies[i].x + 1, zombies[i].y + 1, 4, 4, z_col); // Body
+                    draw_rect(zombies[i].x + 2, zombies[i].y + 2, 2, 2, COLOR_GREEN); // Zombie Head
+                    
+                    // Arms dynamically point toward the player
+                    if (player.x < zombies[i].x) { // Reaching Left
+                        draw_rect(zombies[i].x, zombies[i].y + 1, 2, 1, z_col);
+                        draw_rect(zombies[i].x, zombies[i].y + 4, 2, 1, z_col);
+                    } else if (player.x > zombies[i].x) { // Reaching Right
+                        draw_rect(zombies[i].x + 4, zombies[i].y + 1, 2, 1, z_col);
+                        draw_rect(zombies[i].x + 4, zombies[i].y + 4, 2, 1, z_col);
+                    } else if (player.y < zombies[i].y) { // Reaching Up
+                        draw_rect(zombies[i].x + 1, zombies[i].y, 1, 2, z_col);
+                        draw_rect(zombies[i].x + 4, zombies[i].y, 1, 2, z_col);
+                    } else { // Reaching Down
+                        draw_rect(zombies[i].x + 1, zombies[i].y + 4, 1, 2, z_col);
+                        draw_rect(zombies[i].x + 4, zombies[i].y + 4, 1, 2, z_col);
+                    }
+                }
             }
 
-            // Draw Player & Facing Indicator
-            draw_rect(player.x, player.y, player.w, player.h, (player.iframes % 4 > 1) ? COLOR_WHITE : COLOR_BLUE);
+            // Player (Top-Down Body + Head + Gun Aiming)
+            uint16_t p_col = (player.iframes % 4 > 1) ? COLOR_WHITE : COLOR_BLUE;
+            draw_rect(player.x + 1, player.y + 1, 4, 4, p_col); // Body
+            draw_rect(player.x + 2, player.y + 2, 2, 2, COLOR_SKIN); // Head
             
-            int dir_x = player.x + 2;
-            int dir_y = player.y + 2;
-            if (player.dx < 0) dir_x -= 2;
-            if (player.dx > 0) dir_x += 2;
-            if (player.dy < 0) dir_y -= 2;
-            if (player.dy > 0) dir_y += 2;
-            draw_rect(dir_x, dir_y, 2, 2, COLOR_YELLOW); 
+            // Gun actively points in the direction of movement
+            if (player.dx < 0) { draw_rect(player.x, player.y + 2, 2, 2, COLOR_WHITE); } // Aim Left
+            else if (player.dx > 0) { draw_rect(player.x + 4, player.y + 2, 2, 2, COLOR_WHITE); } // Aim Right
+            else if (player.dy < 0) { draw_rect(player.x + 2, player.y, 2, 2, COLOR_WHITE); } // Aim Up
+            else { draw_rect(player.x + 2, player.y + 4, 2, 2, COLOR_WHITE); } // Aim Down
         }
     }
     return 0;
