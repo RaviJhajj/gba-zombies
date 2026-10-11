@@ -218,7 +218,7 @@ int main(void) {
             if (curr_keys & KEY_UP)    { player.y--; player.dx = 0;  player.dy = -1; }
             if (curr_keys & KEY_DOWN)  { player.y++; player.dx = 0;  player.dy = 1; }
 
-            // Exact arena field constraints (No invisible borders)
+            // Exact arena field constraints
             if (player.x < 0) player.x = 0;
             if (player.x > SCREEN_WIDTH - 6) player.x = SCREEN_WIDTH - 6;
             if (player.y < 10) player.y = 10; 
@@ -253,7 +253,7 @@ int main(void) {
                             spawn_count++;
                         }
                     }
-                    shoot_cooldown = 45; 
+                    shoot_cooldown = 25; // Increased fire rate
                 }
             }
 
@@ -264,10 +264,10 @@ int main(void) {
                 bullets[i].prev_x = bullets[i].x; bullets[i].prev_y = bullets[i].y;
                 bullets[i].x += bullets[i].dx; bullets[i].y += bullets[i].dy;
 
-                // Despawn bullet gracefully out of bounds without updating prev_x 
-                // so the renderer knows exactly where to erase it
                 if (bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH - 2 || bullets[i].y < 10 || bullets[i].y > SCREEN_HEIGHT - 2) {
                     bullets[i].active = false;
+                    bullets[i].prev_x = bullets[i].x;
+                    bullets[i].prev_y = bullets[i].y;
                     continue;
                 }
 
@@ -275,10 +275,14 @@ int main(void) {
                     if (!zombies[z].active) continue;
                     if (check_collision(bullets[i].x, bullets[i].y, 2, 2, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
                         bullets[i].active = false;
-                        zombies[z].health--;
+                        bullets[i].prev_x = bullets[i].x; 
+                        bullets[i].prev_y = bullets[i].y;
                         
+                        zombies[z].health--;
                         if (zombies[z].health <= 0) {
                             zombies[z].active = false;
+                            zombies[z].prev_x = zombies[z].x; // Locks final coordinate for exact cleanup
+                            zombies[z].prev_y = zombies[z].y;
                             zombies_alive--;
                         }
                         break;
@@ -349,7 +353,6 @@ int main(void) {
                 draw_rect(0, 0, SCREEN_WIDTH, 10, COLOR_BLACK); 
                 force_redraw = false;
             } else {
-                // Erase previous entity coordinates securely
                 draw_rect(player.prev_x, player.prev_y, player.w, player.h, COLOR_DARKGRAY);
                 
                 for (int i = 0; i < MAX_BULLETS; i++) {
