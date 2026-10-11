@@ -190,7 +190,7 @@ int main(void) {
                             zombies[i].type = 1; 
                             zombies[i].health = 4 + (wave/3);
                             zombies[i].damage = 2;
-                            zombies[i].speed_delay = 4;
+                            zombies[i].speed_delay = 3; // Increased tank speed
                         } else {
                             zombies[i].type = 0; 
                             zombies[i].health = (wave > 3) ? 2 : 1;
@@ -253,7 +253,7 @@ int main(void) {
                             spawn_count++;
                         }
                     }
-                    shoot_cooldown = 25; // Increased fire rate
+                    shoot_cooldown = 35; // Adjusted cooldown
                 }
             }
 
@@ -261,13 +261,17 @@ int main(void) {
 
             for (int i = 0; i < MAX_BULLETS; i++) {
                 if (!bullets[i].active) continue;
-                bullets[i].prev_x = bullets[i].x; bullets[i].prev_y = bullets[i].y;
-                bullets[i].x += bullets[i].dx; bullets[i].y += bullets[i].dy;
+                
+                // Save valid drawn coordinate BEFORE moving
+                bullets[i].prev_x = bullets[i].x; 
+                bullets[i].prev_y = bullets[i].y;
+                
+                bullets[i].x += bullets[i].dx; 
+                bullets[i].y += bullets[i].dy;
 
+                // Despawn bullet gracefully out of bounds (leaves prev_x intact so the renderer erases the old spot)
                 if (bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH - 2 || bullets[i].y < 10 || bullets[i].y > SCREEN_HEIGHT - 2) {
                     bullets[i].active = false;
-                    bullets[i].prev_x = bullets[i].x;
-                    bullets[i].prev_y = bullets[i].y;
                     continue;
                 }
 
@@ -275,13 +279,12 @@ int main(void) {
                     if (!zombies[z].active) continue;
                     if (check_collision(bullets[i].x, bullets[i].y, 2, 2, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
                         bullets[i].active = false;
-                        bullets[i].prev_x = bullets[i].x; 
-                        bullets[i].prev_y = bullets[i].y;
                         
                         zombies[z].health--;
                         if (zombies[z].health <= 0) {
                             zombies[z].active = false;
-                            zombies[z].prev_x = zombies[z].x; // Locks final coordinate for exact cleanup
+                            // Zombie hasn't moved yet this frame, so its current 'x' is safe to use for cleanup
+                            zombies[z].prev_x = zombies[z].x; 
                             zombies[z].prev_y = zombies[z].y;
                             zombies_alive--;
                         }
