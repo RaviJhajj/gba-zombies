@@ -12,6 +12,7 @@
 
 #define SCREEN_WIDTH    240
 #define SCREEN_HEIGHT   160
+#define HUD_HEIGHT      14 // Pushed down to avoid screen notch
 
 // Keys (Active Low)
 #define KEY_A           (1 << 0)
@@ -52,24 +53,19 @@ const uint16_t font[38] = {
 #define MAX_WALLS 8
 
 typedef struct { int x, y, w, h; } Rect;
-
-typedef struct {
-    const char* name;
-    int wall_count;
-    Rect walls[MAX_WALLS];
-} MapDef;
+typedef struct { const char* name; int wall_count; Rect walls[MAX_WALLS]; } MapDef;
 
 MapDef maps[4] = {
     { "FLAT", 0, {} },
-    { "CORNERS", 8, { // Open ends face the corners
+    { "CORNERS", 8, {
         {30, 45, 25, 8}, {47, 20, 8, 25},   // TL
         {185, 45, 25, 8}, {185, 20, 8, 25}, // TR
         {30, 115, 25, 8}, {47, 123, 8, 25}, // BL
         {185, 115, 25, 8}, {185, 123, 8, 25}// BR
     }},
     { "THIRDS", 4, {
-        {80, 25, 10, 45}, {80, 100, 10, 45},
-        {150, 25, 10, 45}, {150, 100, 10, 45}
+        {80, 14, 10, 62}, {80, 90, 10, 70},   // Small 14px gap in middle
+        {150, 14, 10, 62}, {150, 90, 10, 70}
     }},
     { "PILLARS", 5, {
         {45, 35, 16, 16}, {179, 35, 16, 16},
@@ -98,7 +94,10 @@ static inline void vsync() {
 void draw_rect(int x, int y, int w, int h, uint16_t color) {
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
-    if (color == COLOR_DARKGRAY && y < 10) { int diff = 10 - y; y = 10; h -= diff; }
+    
+    // Protects HUD from ever being overwritten by background floor
+    if (color == COLOR_DARKGRAY && y < HUD_HEIGHT) { int diff = HUD_HEIGHT - y; y = HUD_HEIGHT; h -= diff; }
+    
     if (x + w > SCREEN_WIDTH) w = SCREEN_WIDTH - x;
     if (y + h > SCREEN_HEIGHT) h = SCREEN_HEIGHT - y;
     if (w <= 0 || h <= 0) return;
@@ -154,7 +153,7 @@ int main(void) {
     int shoot_cooldown = 0, zombie_move_timer = 0;
 
     void reset_game() {
-        player = (Player){120, 80, 120, 80, 6, 6, 0, -1, 5, 0, 0};
+        player = (Player){120, 130, 120, 130, 6, 6, 0, -1, 5, 0, 0}; // Moved spawn down to avoid center pillar
         for (int i = 0; i < MAX_ZOMBIES; i++) { zombies[i].active = false; zombies[i].prev_x = -1; }
         for (int i = 0; i < MAX_BULLETS; i++) { bullets[i].active = false; bullets[i].prev_x = -1; }
         wave = 1; zombies_to_spawn = 4; zombies_spawned = 0; zombies_alive = 0;
@@ -208,10 +207,10 @@ int main(void) {
                         }
 
                         int edge = simple_rand() % 4;
-                        if (edge == 0) { zombies[i].x = simple_rand() % (SCREEN_WIDTH - 6); zombies[i].y = 10; }
+                        if (edge == 0) { zombies[i].x = simple_rand() % (SCREEN_WIDTH - 6); zombies[i].y = HUD_HEIGHT; }
                         else if (edge == 1) { zombies[i].x = simple_rand() % (SCREEN_WIDTH - 6); zombies[i].y = SCREEN_HEIGHT - 6; }
-                        else if (edge == 2) { zombies[i].x = 0; zombies[i].y = 10 + simple_rand() % (SCREEN_HEIGHT - 16); }
-                        else { zombies[i].x = SCREEN_WIDTH - 6; zombies[i].y = 10 + simple_rand() % (SCREEN_HEIGHT - 16); }
+                        else if (edge == 2) { zombies[i].x = 0; zombies[i].y = HUD_HEIGHT + simple_rand() % (SCREEN_HEIGHT - HUD_HEIGHT - 6); }
+                        else { zombies[i].x = SCREEN_WIDTH - 6; zombies[i].y = HUD_HEIGHT + simple_rand() % (SCREEN_HEIGHT - HUD_HEIGHT - 6); }
 
                         zombies[i].prev_x = zombies[i].x; zombies[i].prev_y = zombies[i].y;
                         zombies_spawned++; zombies_alive++;
@@ -220,7 +219,7 @@ int main(void) {
                 }
             }
 
-            // Player Movement & Sliding Collision
+            // Player Movement
             player.prev_x = player.x; player.prev_y = player.y;
             int mx = 0, my = 0;
             if (curr_keys & KEY_LEFT)  mx = -1;
@@ -228,15 +227,15 @@ int main(void) {
             if (curr_keys & KEY_UP)    my = -1;
             if (curr_keys & KEY_DOWN)  my = 1;
             
-            if (mx != 0 || my != 0) {
-                player.dx = mx; player.dy = my;
-            }
+            // Strictly enforce 4-way cardinal aiming vector to prevent diagonal bullets
+            if (mx != 0) { player.dx = mx; player.dy = 0; }
+            else if (my != 0) { player.dx = 0; player.dy = my; }
 
             player.x += mx;
             if (player.x < 0 || player.x > SCREEN_WIDTH - 6 || map_collision(player.x, player.y, player.w, player.h)) player.x -= mx;
             
             player.y += my;
-            if (player.y < 10 || player.y > SCREEN_HEIGHT - 6 || map_collision(player.x, player.y, player.w, player.h)) player.y -= my;
+            if (player.y < HUD_HEIGHT || player.y > SCREEN_HEIGHT - 6 || map_collision(player.x, player.y, player.w, player.h)) player.y -= my;
 
             if (shoot_cooldown > 0) shoot_cooldown--;
             if ((curr_keys & KEY_A) && shoot_cooldown == 0) {
@@ -246,7 +245,7 @@ int main(void) {
                             bullets[i].active = true;
                             bullets[i].x = player.x + 2; bullets[i].y = player.y + 2;
                             bullets[i].dx = (player.dx == 0 && player.dy == 0) ? 0 : player.dx * 4;
-                            bullets[i].dy = (player.dx == 0 && player.dy == 0) ? -4 : player.dy * 4; // Default up if stationary
+                            bullets[i].dy = (player.dx == 0 && player.dy == 0) ? -4 : player.dy * 4;
                             shoot_cooldown = 12; break;
                         }
                     }
@@ -274,7 +273,7 @@ int main(void) {
                 bullets[i].prev_x = bullets[i].x; bullets[i].prev_y = bullets[i].y;
                 bullets[i].x += bullets[i].dx; bullets[i].y += bullets[i].dy;
 
-                if (bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH - 2 || bullets[i].y < 10 || bullets[i].y > SCREEN_HEIGHT - 2 || map_collision(bullets[i].x, bullets[i].y, 2, 2)) {
+                if (bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH - 2 || bullets[i].y < HUD_HEIGHT || bullets[i].y > SCREEN_HEIGHT - 2 || map_collision(bullets[i].x, bullets[i].y, 2, 2)) {
                     bullets[i].active = false;
                     continue;
                 }
@@ -302,17 +301,29 @@ int main(void) {
 
                 if (zombie_move_timer % zombies[i].speed_delay == 0) {
                     int zmx = 0, zmy = 0;
-                    int r = simple_rand() % 4;
-                    if (r != 0 && zombies[i].x < player.x) zmx = 1;
-                    if (r != 1 && zombies[i].x > player.x) zmx = -1;
-                    if (r != 2 && zombies[i].y < player.y) zmy = 1;
-                    if (r != 3 && zombies[i].y > player.y) zmy = -1;
+                    if (zombies[i].x < player.x) zmx = 1;
+                    else if (zombies[i].x > player.x) zmx = -1;
+                    if (zombies[i].y < player.y) zmy = 1;
+                    else if (zombies[i].y > player.y) zmy = -1;
 
+                    // Improved Zombie Wall Sliding Logic
+                    int orig_x = zombies[i].x;
                     zombies[i].x += zmx;
-                    if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) zombies[i].x -= zmx;
-                    
+                    if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
+                        zombies[i].x = orig_x; // Rollback
+                        if (zmy == 0) zmy = (player.y > zombies[i].y) ? 1 : -1; // Force perpendicular slide
+                    }
+
+                    int orig_y = zombies[i].y;
                     zombies[i].y += zmy;
-                    if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) zombies[i].y -= zmy;
+                    if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
+                        zombies[i].y = orig_y; // Rollback
+                        if (zmx == 0) {
+                            zmx = (player.x > zombies[i].x) ? 1 : -1;
+                            zombies[i].x += zmx;
+                            if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) zombies[i].x = orig_x;
+                        }
+                    }
                 }
 
                 if (player.iframes == 0 && check_collision(player.x, player.y, player.w, player.h, zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
@@ -371,7 +382,13 @@ int main(void) {
         else { // STATE_PLAY
             if (force_redraw) {
                 draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_DARKGRAY);
-                draw_rect(0, 0, SCREEN_WIDTH, 10, COLOR_BLACK); 
+                draw_rect(0, 0, SCREEN_WIDTH, HUD_HEIGHT, COLOR_BLACK); 
+                
+                // Draw map walls ONCE to completely eliminate flickering
+                for (int i = 0; i < maps[selected_map].wall_count; i++) {
+                    Rect wall = maps[selected_map].walls[i];
+                    draw_rect(wall.x, wall.y, wall.w, wall.h, COLOR_LIGHTGRAY);
+                }
                 force_redraw = false;
             } else {
                 draw_rect(player.prev_x, player.prev_y, player.w, player.h, COLOR_DARKGRAY);
@@ -387,12 +404,6 @@ int main(void) {
                         if (!zombies[i].active) zombies[i].prev_x = -1;
                     }
                 }
-            }
-
-            // Redraw map walls every frame (covers bullet hole artifacts)
-            for (int i = 0; i < maps[selected_map].wall_count; i++) {
-                Rect wall = maps[selected_map].walls[i];
-                draw_rect(wall.x, wall.y, wall.w, wall.h, COLOR_LIGHTGRAY);
             }
 
             // HUD Refresh
