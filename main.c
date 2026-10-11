@@ -33,10 +33,11 @@
 #define COLOR_YELLOW    RGB15(31, 31, 0)
 #define COLOR_ORANGE    RGB15(31, 15, 0)
 #define COLOR_DARKGRAY  RGB15(4, 4, 4)
-#define COLOR_SKIN      RGB15(31, 22, 15) // Peach color for human heads
+#define COLOR_LIGHTGRAY RGB15(15, 15, 15)
+#define COLOR_SKIN      RGB15(31, 22, 15)
 
 // Game States
-enum { STATE_START, STATE_PLAY, STATE_PAUSE, STATE_GAMEOVER };
+enum { STATE_MAP_SELECT, STATE_START, STATE_PLAY, STATE_PAUSE, STATE_GAMEOVER };
 
 // Minimal Font
 const uint16_t font[38] = {
@@ -48,26 +49,41 @@ const uint16_t font[38] = {
 
 #define MAX_ZOMBIES 25
 #define MAX_BULLETS 20
+#define MAX_WALLS 8
+
+typedef struct { int x, y, w, h; } Rect;
 
 typedef struct {
-    int x, y, prev_x, prev_y, w, h;
-    int dx, dy;
-    int health, iframes;
-    int weapon; 
-} Player;
+    const char* name;
+    int wall_count;
+    Rect walls[MAX_WALLS];
+} MapDef;
 
-typedef struct {
-    int x, y, prev_x, prev_y, w, h;
-    int health, type, damage, speed_delay;
-    bool active;
-} Zombie;
+MapDef maps[4] = {
+    { "FLAT", 0, {} },
+    { "CORNERS", 8, { // Open ends face the corners
+        {30, 45, 25, 8}, {47, 20, 8, 25},   // TL
+        {185, 45, 25, 8}, {185, 20, 8, 25}, // TR
+        {30, 115, 25, 8}, {47, 123, 8, 25}, // BL
+        {185, 115, 25, 8}, {185, 123, 8, 25}// BR
+    }},
+    { "THIRDS", 4, {
+        {80, 25, 10, 45}, {80, 100, 10, 45},
+        {150, 25, 10, 45}, {150, 100, 10, 45}
+    }},
+    { "PILLARS", 5, {
+        {45, 35, 16, 16}, {179, 35, 16, 16},
+        {45, 110, 16, 16}, {179, 110, 16, 16},
+        {112, 72, 16, 16}
+    }}
+};
 
-typedef struct {
-    int x, y, prev_x, prev_y, dx, dy;
-    bool active;
-} Bullet;
+typedef struct { int x, y, prev_x, prev_y, w, h, dx, dy, health, iframes, weapon; } Player;
+typedef struct { int x, y, prev_x, prev_y, w, h, health, type, damage, speed_delay; bool active; } Zombie;
+typedef struct { int x, y, prev_x, prev_y, dx, dy; bool active; } Bullet;
 
-int game_state = STATE_START;
+int game_state = STATE_MAP_SELECT;
+int selected_map = 0;
 int wave = 1;
 bool force_redraw = true;
 
@@ -79,27 +95,17 @@ static inline void vsync() {
     while (REG_VCOUNT < 160);
 }
 
-// Optimized Drawing Routine with HUD Protection
 void draw_rect(int x, int y, int w, int h, uint16_t color) {
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
-    
-    // Prevents the background gray from ever erasing the black HUD bar
-    if (color == COLOR_DARKGRAY && y < 10) {
-        int diff = 10 - y;
-        y = 10;
-        h -= diff;
-    }
-
+    if (color == COLOR_DARKGRAY && y < 10) { int diff = 10 - y; y = 10; h -= diff; }
     if (x + w > SCREEN_WIDTH) w = SCREEN_WIDTH - x;
     if (y + h > SCREEN_HEIGHT) h = SCREEN_HEIGHT - y;
     if (w <= 0 || h <= 0) return;
 
     for (int j = 0; j < h; j++) {
         int offset = (y + j) * SCREEN_WIDTH + x;
-        for (int i = 0; i < w; i++) {
-            VRAM[offset + i] = color;
-        }
+        for (int i = 0; i < w; i++) VRAM[offset + i] = color;
     }
 }
 
@@ -112,26 +118,29 @@ void draw_text(const char* str, int x, int y, uint16_t color) {
         uint16_t bits = font[idx];
         for (int row = 0; row < 5; row++) {
             for (int col = 0; col < 3; col++) {
-                if ((bits >> (12 - row * 3 + (2 - col))) & 1) {
-                    draw_rect(x + col*2, y + row*2, 2, 2, color);
-                }
+                if ((bits >> (12 - row * 3 + (2 - col))) & 1) draw_rect(x + col*2, y + row*2, 2, 2, color);
             }
         }
-        x += 8;
-        str++;
+        x += 8; str++;
     }
 }
 
 static uint32_t rng_state = 123456789;
 uint32_t simple_rand() {
-    rng_state ^= rng_state << 13;
-    rng_state ^= rng_state >> 17;
-    rng_state ^= rng_state << 5;
+    rng_state ^= rng_state << 13; rng_state ^= rng_state >> 17; rng_state ^= rng_state << 5;
     return rng_state;
 }
 
 bool check_collision(int x1, int y1, int w1, int h1, int x2, int y2, int w2, int h2) {
     return (x1 < x2 + w2 && x1 + w1 > x2 && y1 < y2 + h2 && y1 + h1 > y2);
+}
+
+bool map_collision(int x, int y, int w, int h) {
+    for (int i = 0; i < maps[selected_map].wall_count; i++) {
+        Rect wall = maps[selected_map].walls[i];
+        if (check_collision(x, y, w, h, wall.x, wall.y, wall.w, wall.h)) return true;
+    }
+    return false;
 }
 
 int main(void) {
@@ -160,15 +169,20 @@ int main(void) {
         prev_keys = curr_keys;
 
         // --- GAME LOGIC ---
-        if (game_state == STATE_START) {
+        if (game_state == STATE_MAP_SELECT) {
+            if (keys_pressed & KEY_UP) { selected_map = (selected_map - 1 + 4) % 4; force_redraw = true; }
+            if (keys_pressed & KEY_DOWN) { selected_map = (selected_map + 1) % 4; force_redraw = true; }
+            if (keys_pressed & KEY_A) { game_state = STATE_START; force_redraw = true; }
+        }
+        else if (game_state == STATE_START) {
             if (keys_pressed & KEY_START) { game_state = STATE_PLAY; reset_game(); }
         }
         else if (game_state == STATE_GAMEOVER) {
-            if (keys_pressed & KEY_START) { game_state = STATE_START; force_redraw = true; }
+            if (keys_pressed & KEY_START) { game_state = STATE_MAP_SELECT; force_redraw = true; }
         }
         else if (game_state == STATE_PAUSE) {
             if (keys_pressed & KEY_START) { game_state = STATE_PLAY; force_redraw = true; }
-            if (keys_pressed & KEY_SELECT) { game_state = STATE_START; force_redraw = true; }
+            if (keys_pressed & KEY_SELECT) { game_state = STATE_MAP_SELECT; force_redraw = true; }
         }
         else { // STATE_PLAY
             if (keys_pressed & KEY_START) { game_state = STATE_PAUSE; force_redraw = true; continue; }
@@ -188,15 +202,9 @@ int main(void) {
                         zombies[i].w = 6; zombies[i].h = 6;
                         
                         if (wave >= 3 && (simple_rand() % 5) == 0) {
-                            zombies[i].type = 1; 
-                            zombies[i].health = 4 + (wave/3);
-                            zombies[i].damage = 2;
-                            zombies[i].speed_delay = 3; 
+                            zombies[i].type = 1; zombies[i].health = 4 + (wave/3); zombies[i].damage = 2; zombies[i].speed_delay = 3; 
                         } else {
-                            zombies[i].type = 0; 
-                            zombies[i].health = (wave > 3) ? 2 : 1;
-                            zombies[i].damage = 1;
-                            zombies[i].speed_delay = 2;
+                            zombies[i].type = 0; zombies[i].health = (wave > 3) ? 2 : 1; zombies[i].damage = 1; zombies[i].speed_delay = 2;
                         }
 
                         int edge = simple_rand() % 4;
@@ -212,43 +220,46 @@ int main(void) {
                 }
             }
 
+            // Player Movement & Sliding Collision
             player.prev_x = player.x; player.prev_y = player.y;
-            if (curr_keys & KEY_LEFT)  { player.x--; player.dx = -1; player.dy = 0; }
-            if (curr_keys & KEY_RIGHT) { player.x++; player.dx = 1;  player.dy = 0; }
-            if (curr_keys & KEY_UP)    { player.y--; player.dx = 0;  player.dy = -1; }
-            if (curr_keys & KEY_DOWN)  { player.y++; player.dx = 0;  player.dy = 1; }
+            int mx = 0, my = 0;
+            if (curr_keys & KEY_LEFT)  mx = -1;
+            if (curr_keys & KEY_RIGHT) mx = 1;
+            if (curr_keys & KEY_UP)    my = -1;
+            if (curr_keys & KEY_DOWN)  my = 1;
+            
+            if (mx != 0 || my != 0) {
+                player.dx = mx; player.dy = my;
+            }
 
-            if (player.x < 0) player.x = 0;
-            if (player.x > SCREEN_WIDTH - 6) player.x = SCREEN_WIDTH - 6;
-            if (player.y < 10) player.y = 10; 
-            if (player.y > SCREEN_HEIGHT - 6) player.y = SCREEN_HEIGHT - 6;
+            player.x += mx;
+            if (player.x < 0 || player.x > SCREEN_WIDTH - 6 || map_collision(player.x, player.y, player.w, player.h)) player.x -= mx;
+            
+            player.y += my;
+            if (player.y < 10 || player.y > SCREEN_HEIGHT - 6 || map_collision(player.x, player.y, player.w, player.h)) player.y -= my;
 
             if (shoot_cooldown > 0) shoot_cooldown--;
             if ((curr_keys & KEY_A) && shoot_cooldown == 0) {
                 if (player.weapon == 0) { 
-                    // Pistol
                     for (int i = 0; i < MAX_BULLETS; i++) {
                         if (!bullets[i].active) {
                             bullets[i].active = true;
                             bullets[i].x = player.x + 2; bullets[i].y = player.y + 2;
-                            bullets[i].dx = player.dx * 4; bullets[i].dy = player.dy * 4;
-                            shoot_cooldown = 12;
-                            break;
+                            bullets[i].dx = (player.dx == 0 && player.dy == 0) ? 0 : player.dx * 4;
+                            bullets[i].dy = (player.dx == 0 && player.dy == 0) ? -4 : player.dy * 4; // Default up if stationary
+                            shoot_cooldown = 12; break;
                         }
                     }
                 } else { 
-                    // Shotgun (4-way blast)
                     int spawn_count = 0;
                     for (int i = 0; i < MAX_BULLETS && spawn_count < 4; i++) {
                         if (!bullets[i].active) {
                             bullets[i].active = true;
                             bullets[i].x = player.x + 2; bullets[i].y = player.y + 2;
-                            
                             if (spawn_count == 0) { bullets[i].dx = 0; bullets[i].dy = -4; } 
                             else if (spawn_count == 1) { bullets[i].dx = 0; bullets[i].dy = 4; } 
                             else if (spawn_count == 2) { bullets[i].dx = -4; bullets[i].dy = 0; } 
                             else { bullets[i].dx = 4; bullets[i].dy = 0; } 
-                            
                             spawn_count++;
                         }
                     }
@@ -260,14 +271,10 @@ int main(void) {
 
             for (int i = 0; i < MAX_BULLETS; i++) {
                 if (!bullets[i].active) continue;
-                
-                bullets[i].prev_x = bullets[i].x; 
-                bullets[i].prev_y = bullets[i].y;
-                
-                bullets[i].x += bullets[i].dx; 
-                bullets[i].y += bullets[i].dy;
+                bullets[i].prev_x = bullets[i].x; bullets[i].prev_y = bullets[i].y;
+                bullets[i].x += bullets[i].dx; bullets[i].y += bullets[i].dy;
 
-                if (bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH - 2 || bullets[i].y < 10 || bullets[i].y > SCREEN_HEIGHT - 2) {
+                if (bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH - 2 || bullets[i].y < 10 || bullets[i].y > SCREEN_HEIGHT - 2 || map_collision(bullets[i].x, bullets[i].y, 2, 2)) {
                     bullets[i].active = false;
                     continue;
                 }
@@ -276,7 +283,6 @@ int main(void) {
                     if (!zombies[z].active) continue;
                     if (check_collision(bullets[i].x, bullets[i].y, 2, 2, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
                         bullets[i].active = false;
-                        
                         zombies[z].health--;
                         if (zombies[z].health <= 0) {
                             zombies[z].active = false;
@@ -295,11 +301,18 @@ int main(void) {
                 zombies[i].prev_x = zombies[i].x; zombies[i].prev_y = zombies[i].y;
 
                 if (zombie_move_timer % zombies[i].speed_delay == 0) {
+                    int zmx = 0, zmy = 0;
                     int r = simple_rand() % 4;
-                    if (r != 0 && zombies[i].x < player.x) zombies[i].x++;
-                    if (r != 1 && zombies[i].x > player.x) zombies[i].x--;
-                    if (r != 2 && zombies[i].y < player.y) zombies[i].y++;
-                    if (r != 3 && zombies[i].y > player.y) zombies[i].y--;
+                    if (r != 0 && zombies[i].x < player.x) zmx = 1;
+                    if (r != 1 && zombies[i].x > player.x) zmx = -1;
+                    if (r != 2 && zombies[i].y < player.y) zmy = 1;
+                    if (r != 3 && zombies[i].y > player.y) zmy = -1;
+
+                    zombies[i].x += zmx;
+                    if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) zombies[i].x -= zmx;
+                    
+                    zombies[i].y += zmy;
+                    if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) zombies[i].y -= zmy;
                 }
 
                 if (player.iframes == 0 && check_collision(player.x, player.y, player.w, player.h, zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
@@ -314,7 +327,18 @@ int main(void) {
         vsync();
 
         // --- RENDERING LOGIC ---
-        if (game_state == STATE_START) {
+        if (game_state == STATE_MAP_SELECT) {
+            if (force_redraw) {
+                draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BLACK);
+                draw_text("SELECT MAP", 80, 20, COLOR_RED);
+                for (int i = 0; i < 4; i++) {
+                    draw_text(maps[i].name, 90, 60 + (i * 15), (i == selected_map) ? COLOR_YELLOW : COLOR_WHITE);
+                    if (i == selected_map) draw_text(">", 75, 60 + (i * 15), COLOR_YELLOW);
+                }
+                force_redraw = false;
+            }
+        }
+        else if (game_state == STATE_START) {
             if (force_redraw) {
                 draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BLACK);
                 draw_text("ZOMBIE SURVIVAL", 60, 50, COLOR_RED);
@@ -328,11 +352,9 @@ int main(void) {
                 draw_text("GAME OVER", 84, 40, COLOR_RED);
                 
                 char wave_text[] = "ROUND 00";
-                wave_text[6] = (wave / 10) + '0';
-                wave_text[7] = (wave % 10) + '0';
+                wave_text[6] = (wave / 10) + '0'; wave_text[7] = (wave % 10) + '0';
                 if (wave_text[6] == '0') { wave_text[6] = wave_text[7]; wave_text[7] = '\0'; }
                 draw_text(wave_text, 92, 60, COLOR_YELLOW);
-
                 draw_text("PRESS START", 76, 90, COLOR_WHITE);
                 force_redraw = false;
             }
@@ -342,7 +364,7 @@ int main(void) {
                 draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BLACK);
                 draw_text("PAUSED", 96, 40, COLOR_YELLOW);
                 draw_text("START TO RESUME", 60, 80, COLOR_WHITE);
-                draw_text("SELECT TO RESTART", 52, 100, COLOR_WHITE);
+                draw_text("SELECT TO QUIT", 60, 100, COLOR_WHITE);
                 force_redraw = false;
             }
         }
@@ -352,9 +374,7 @@ int main(void) {
                 draw_rect(0, 0, SCREEN_WIDTH, 10, COLOR_BLACK); 
                 force_redraw = false;
             } else {
-                // Erase entire 6x6 footprint securely
                 draw_rect(player.prev_x, player.prev_y, player.w, player.h, COLOR_DARKGRAY);
-                
                 for (int i = 0; i < MAX_BULLETS; i++) {
                     if (bullets[i].prev_x != -1) {
                         draw_rect(bullets[i].prev_x, bullets[i].prev_y, 2, 2, COLOR_DARKGRAY);
@@ -369,76 +389,58 @@ int main(void) {
                 }
             }
 
-            // --- HUD REFRESH ---
-            
-            // 1. Segmented Health Bar
-            draw_rect(4, 3, 30, 4, COLOR_RED); // Background (lost health)
-            if (player.health > 0) draw_rect(4, 3, player.health * 6, 4, COLOR_GREEN); // Active health
-            for (int i = 1; i < 5; i++) {
-                draw_rect(4 + (i * 6) - 1, 3, 1, 4, COLOR_BLACK); // Vertical dividers
+            // Redraw map walls every frame (covers bullet hole artifacts)
+            for (int i = 0; i < maps[selected_map].wall_count; i++) {
+                Rect wall = maps[selected_map].walls[i];
+                draw_rect(wall.x, wall.y, wall.w, wall.h, COLOR_LIGHTGRAY);
             }
 
-            // 2. Shaped Weapon Indicator
+            // HUD Refresh
+            draw_rect(2, 2, 40, 6, COLOR_BLACK); 
+            draw_rect(4, 3, 30, 4, COLOR_RED);
+            if (player.health > 0) draw_rect(4, 3, player.health * 6, 4, COLOR_GREEN);
+            for (int i = 1; i < 5; i++) draw_rect(4 + (i * 6) - 1, 3, 1, 4, COLOR_BLACK);
+
             int gun_x = SCREEN_WIDTH / 2 - 8;
-            draw_rect(gun_x, 2, 16, 6, COLOR_BLACK); // Clear previous gun area
-            if (player.weapon == 0) { // Pistol Shape
-                draw_rect(gun_x + 6, 3, 4, 2, COLOR_WHITE); // Barrel
-                draw_rect(gun_x + 6, 5, 2, 2, COLOR_WHITE); // Grip
-            } else { // Shotgun Shape
-                draw_rect(gun_x + 3, 3, 8, 2, COLOR_ORANGE); // Long Barrel
-                draw_rect(gun_x + 3, 5, 2, 2, COLOR_ORANGE); // Stock
-                draw_rect(gun_x + 7, 5, 3, 1, COLOR_ORANGE); // Pump Handle
+            draw_rect(gun_x, 2, 16, 6, COLOR_BLACK); 
+            if (player.weapon == 0) { 
+                draw_rect(gun_x + 6, 3, 4, 2, COLOR_WHITE); 
+                draw_rect(gun_x + 6, 5, 2, 2, COLOR_WHITE); 
+            } else { 
+                draw_rect(gun_x + 3, 3, 8, 2, COLOR_ORANGE); 
+                draw_rect(gun_x + 3, 5, 2, 2, COLOR_ORANGE); 
+                draw_rect(gun_x + 7, 5, 3, 1, COLOR_ORANGE); 
             }
             
-            // 3. Numeric Round Counter
             draw_rect(170, 2, 70, 6, COLOR_BLACK); 
             draw_text("RND:", 180, 2, COLOR_WHITE);
             char rnd_str[3] = {(wave / 10) + '0', (wave % 10) + '0', 0};
             if (rnd_str[0] == '0') { rnd_str[0] = rnd_str[1]; rnd_str[1] = '\0'; }
             draw_text(rnd_str, 212, 2, COLOR_YELLOW);
 
-
-            // --- ENTITY DRAWING ---
-
             for (int i = 0; i < MAX_BULLETS; i++) {
                 if (bullets[i].active) draw_rect(bullets[i].x, bullets[i].y, 2, 2, COLOR_WHITE);
             }
             
-            // Zombies (Top-Down Body + Head + Reaching Arms)
             for (int i = 0; i < MAX_ZOMBIES; i++) {
                 if (zombies[i].active) {
                     uint16_t z_col = (zombies[i].type == 1) ? COLOR_ORANGE : COLOR_RED;
-                    
-                    draw_rect(zombies[i].x + 1, zombies[i].y + 1, 4, 4, z_col); // Body
-                    draw_rect(zombies[i].x + 2, zombies[i].y + 2, 2, 2, COLOR_GREEN); // Zombie Head
-                    
-                    // Arms dynamically point toward the player
-                    if (player.x < zombies[i].x) { // Reaching Left
-                        draw_rect(zombies[i].x, zombies[i].y + 1, 2, 1, z_col);
-                        draw_rect(zombies[i].x, zombies[i].y + 4, 2, 1, z_col);
-                    } else if (player.x > zombies[i].x) { // Reaching Right
-                        draw_rect(zombies[i].x + 4, zombies[i].y + 1, 2, 1, z_col);
-                        draw_rect(zombies[i].x + 4, zombies[i].y + 4, 2, 1, z_col);
-                    } else if (player.y < zombies[i].y) { // Reaching Up
-                        draw_rect(zombies[i].x + 1, zombies[i].y, 1, 2, z_col);
-                        draw_rect(zombies[i].x + 4, zombies[i].y, 1, 2, z_col);
-                    } else { // Reaching Down
-                        draw_rect(zombies[i].x + 1, zombies[i].y + 4, 1, 2, z_col);
-                        draw_rect(zombies[i].x + 4, zombies[i].y + 4, 1, 2, z_col);
-                    }
+                    draw_rect(zombies[i].x + 1, zombies[i].y + 1, 4, 4, z_col); 
+                    draw_rect(zombies[i].x + 2, zombies[i].y + 2, 2, 2, COLOR_GREEN); 
+                    if (player.x < zombies[i].x) { draw_rect(zombies[i].x, zombies[i].y + 1, 2, 1, z_col); draw_rect(zombies[i].x, zombies[i].y + 4, 2, 1, z_col); }
+                    else if (player.x > zombies[i].x) { draw_rect(zombies[i].x + 4, zombies[i].y + 1, 2, 1, z_col); draw_rect(zombies[i].x + 4, zombies[i].y + 4, 2, 1, z_col); }
+                    else if (player.y < zombies[i].y) { draw_rect(zombies[i].x + 1, zombies[i].y, 1, 2, z_col); draw_rect(zombies[i].x + 4, zombies[i].y, 1, 2, z_col); }
+                    else { draw_rect(zombies[i].x + 1, zombies[i].y + 4, 1, 2, z_col); draw_rect(zombies[i].x + 4, zombies[i].y + 4, 1, 2, z_col); }
                 }
             }
 
-            // Player (Top-Down Body + Head + Gun Aiming)
             uint16_t p_col = (player.iframes % 4 > 1) ? COLOR_WHITE : COLOR_BLUE;
-            draw_rect(player.x + 1, player.y + 1, 4, 4, p_col); // Body
-            draw_rect(player.x + 2, player.y + 2, 2, 2, COLOR_SKIN); // Head
-            
-            // Gun actively points in the direction of movement
-            if (player.dx < 0) { draw_rect(player.x, player.y + 2, 2, 2, COLOR_WHITE); } // Aim Left
-            else if (player.dx > 0) { draw_rect(player.x + 4, player.y + 2, 2, 2, COLOR_WHITE); } // Aim Right
-            else if (player.dy < 0) { draw_rect(player.x + 2, player.y, 2, 2, COLOR_WHITE); } // Aim Up
-            else { draw_rect(player.x + 2, player.y + 4, 2, 2, COLOR_WHITE); } // Aim Down
+            draw_rect(player.x + 1, player.y + 1, 4, 4, p_col); 
+            draw_rect(player.x + 2, player.y + 2, 2, 2, COLOR_SKIN); 
+            if (player.dx < 0) draw_rect(player.x, player.y + 2, 2, 2, COLOR_WHITE);
+            else if (player.dx > 0) draw_rect(player.x + 4, player.y + 2, 2, 2, COLOR_WHITE);
+            else if (player.dy < 0) draw_rect(player.x + 2, player.y, 2, 2, COLOR_WHITE);
+            else draw_rect(player.x + 2, player.y + 4, 2, 2, COLOR_WHITE);
         }
     }
     return 0;
