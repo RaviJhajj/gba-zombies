@@ -33,6 +33,7 @@
 #define COLOR_GREEN     RGB15(0, 31, 0)
 #define COLOR_DARKGREEN RGB15(0, 15, 0)
 #define COLOR_BLUE      RGB15(0, 15, 31)
+#define COLOR_LIGHTBLUE RGB15(15, 25, 31)
 #define COLOR_YELLOW    RGB15(31, 31, 0)
 #define COLOR_ORANGE    RGB15(31, 15, 0)
 #define COLOR_PURPLE    RGB15(18, 0, 18)
@@ -43,7 +44,6 @@
 // Game States
 enum { STATE_MAP_SELECT, STATE_START, STATE_PLAY, STATE_PAUSE, STATE_GAMEOVER };
 
-// Minimal Font
 const uint16_t font[38] = {
     075557, 022222, 071747, 071717, 055711, 074717, 074757, 071111, 075757, 075717,
     025755, 065656, 074447, 065556, 074747, 074744, 074557, 055755, 072227, 031153,
@@ -51,8 +51,9 @@ const uint16_t font[38] = {
     055557, 055552, 055575, 055255, 055222, 071247, 000000, 000200
 };
 
-#define MAX_ZOMBIES 40 // Increased to support Mega Zombie horde spawns
+#define MAX_ZOMBIES 40 
 #define MAX_BULLETS 20
+#define MAX_DROPS 10
 #define MAX_WALLS 8
 
 typedef struct { int x, y, w, h; } Rect;
@@ -80,14 +81,18 @@ MapDef maps[4] = {
 typedef struct { int x, y, prev_x, prev_y, w, h, dx, dy, health, iframes, weapon, grenades; } Player;
 typedef struct { int x, y, prev_x, prev_y, w, h, health, type, damage, speed_delay; bool active; } Zombie;
 typedef struct { int x, y, prev_x, prev_y, dx, dy; bool active; } Bullet;
-typedef struct { int x, y, timer, state; } Grenade; // 0=off, 1=ticking, 2=exploding
+typedef struct { int x, y, timer, state; } Grenade; 
+typedef struct { int x, y, type, timer; bool active; } Drop;
+typedef struct { int type, value, max_value; } ActivePowerUp; // type -1 is empty
 
-// Global Game State
 Player player;
 Zombie zombies[MAX_ZOMBIES];
 Bullet bullets[MAX_BULLETS];
 Grenade grenade;
+Drop drops[MAX_DROPS];
+ActivePowerUp active_pups[3];
 
+int kill_count_since_drop = 0;
 int zombies_to_spawn, zombies_spawned, zombies_alive;
 int game_state = STATE_MAP_SELECT;
 int selected_map = 0;
@@ -150,19 +155,39 @@ bool map_collision(int x, int y, int w, int h) {
     return false;
 }
 
-// Handles zombie deaths and Mega Zombie death spawns
 void kill_zombie(int z_idx) {
     zombies[z_idx].active = false;
     zombies[z_idx].prev_x = zombies[z_idx].x; 
     zombies[z_idx].prev_y = zombies[z_idx].y;
     zombies_alive--;
 
-    if (zombies[z_idx].type == 2) { // Mega Zombie Death Effect
+    // Drop Logic
+    kill_count_since_drop++;
+    int prob = 0;
+    if (kill_count_since_drop >= 20) prob = 100;
+    else if (kill_count_since_drop >= 15) prob = 75;
+    else if (kill_count_since_drop >= 10) prob = 50;
+
+    if (prob > 0 && (simple_rand() % 100) < prob) {
+        kill_count_since_drop = 0;
+        for (int i = 0; i < MAX_DROPS; i++) {
+            if (!drops[i].active) {
+                drops[i].active = true;
+                drops[i].x = zombies[z_idx].x + 1;
+                drops[i].y = zombies[z_idx].y + 1;
+                drops[i].timer = 300; // 5 Seconds
+                drops[i].type = simple_rand() % 6; 
+                break;
+            }
+        }
+    }
+
+    if (zombies[z_idx].type == 2) { 
         int spawned = 0;
         for (int new_z = 0; new_z < MAX_ZOMBIES && spawned < 4; new_z++) {
             if (!zombies[new_z].active) {
                 zombies[new_z].active = true;
-                zombies[new_z].type = 0; // Red zombies
+                zombies[new_z].type = 0; 
                 zombies[new_z].health = (wave > 3) ? 2 : 1;
                 zombies[new_z].damage = 1;
                 zombies[new_z].speed_delay = 2;
@@ -187,9 +212,9 @@ void kill_zombie(int z_idx) {
                 spawned++;
             }
         }
-        zombies_to_spawn += spawned; // Delays wave end
-        zombies_spawned += spawned;  // Prevents extra edge spawns
-        zombies_alive += spawned;    // Keeps wave active
+        zombies_to_spawn += spawned; 
+        zombies_spawned += spawned;  
+        zombies_alive += spawned;    
     }
 }
 
@@ -200,8 +225,11 @@ int main(void) {
     void reset_game() {
         player = (Player){120, 130, 120, 130, 6, 6, 0, -1, 5, 0, 0, 2}; 
         grenade.state = 0;
+        kill_count_since_drop = 0;
         for (int i = 0; i < MAX_ZOMBIES; i++) { zombies[i].active = false; zombies[i].prev_x = -1; }
         for (int i = 0; i < MAX_BULLETS; i++) { bullets[i].active = false; bullets[i].prev_x = -1; }
+        for (int i = 0; i < MAX_DROPS; i++) { drops[i].active = false; }
+        for (int i = 0; i < 3; i++) { active_pups[i].type = -1; }
         wave = 1; zombies_to_spawn = 4; zombies_spawned = 0; zombies_alive = 0;
         force_redraw = true;
     }
@@ -233,7 +261,60 @@ int main(void) {
             if (keys_pressed & KEY_START) { game_state = STATE_PAUSE; force_redraw = true; continue; }
             if (keys_pressed & KEY_R) player.weapon = !player.weapon;
 
-            // Grenade Deployment
+            // PowerUp Timer Logic
+            for(int i = 0; i < 3; i++) {
+                if (active_pups[i].type == 1 || active_pups[i].type == 3) {
+                    active_pups[i].value--;
+                    if (active_pups[i].value <= 0) active_pups[i].type = -1;
+                }
+            }
+
+            // Status Checkers
+            bool has_insta = false;
+            bool has_freeze = false;
+            bool has_biggun = false;
+            int bg_slot = -1;
+            int sh_slot = -1;
+            
+            for(int i=0; i<3; i++) {
+                if (active_pups[i].type == 0) sh_slot = i;
+                if (active_pups[i].type == 1) has_insta = true;
+                if (active_pups[i].type == 2) { has_biggun = true; bg_slot = i; }
+                if (active_pups[i].type == 3) has_freeze = true;
+            }
+
+            // Process Active Drops & Pickups
+            for(int i=0; i<MAX_DROPS; i++) {
+                if (!drops[i].active) continue;
+                drops[i].timer--;
+                if (drops[i].timer <= 0) {
+                    drops[i].active = false;
+                    draw_rect(drops[i].x, drops[i].y, 4, 4, COLOR_DARKGRAY);
+                    continue;
+                }
+                
+                if (check_collision(player.x, player.y, player.w, player.h, drops[i].x, drops[i].y, 4, 4)) {
+                    drops[i].active = false;
+                    draw_rect(drops[i].x, drops[i].y, 4, 4, COLOR_DARKGRAY);
+                    
+                    int t = drops[i].type;
+                    if (t == 4) { if (player.grenades < 2) player.grenades++; }
+                    else if (t == 5) { if (player.health < 5) player.health++; }
+                    else {
+                        // Find empty slot
+                        for(int s=0; s<3; s++) {
+                            if (active_pups[s].type == -1) {
+                                active_pups[s].type = t;
+                                if (t == 0) { active_pups[s].value = 1; active_pups[s].max_value = 1; }
+                                else if (t == 1 || t == 3) { active_pups[s].value = 300; active_pups[s].max_value = 300; }
+                                else if (t == 2) { active_pups[s].value = 40; active_pups[s].max_value = 40; }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
             if ((keys_pressed & KEY_B) && player.grenades > 0 && grenade.state == 0) {
                 player.grenades--;
                 grenade.state = 1; 
@@ -249,14 +330,19 @@ int main(void) {
                     grenade.timer = 10; 
                     for(int z=0; z<MAX_ZOMBIES; z++) {
                         if (zombies[z].active && check_collision(grenade.x - 30, grenade.y - 30, 60, 60, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
-                            zombies[z].health -= 2;
+                            zombies[z].health -= (has_insta ? 100 : 2);
                             if (zombies[z].health <= 0) kill_zombie(z);
                         }
                     }
                     if (player.iframes == 0 && check_collision(grenade.x - 30, grenade.y - 30, 60, 60, player.x, player.y, player.w, player.h)) {
-                        player.health -= 1;
-                        player.iframes = 45;
-                        if (player.health <= 0) { game_state = STATE_GAMEOVER; force_redraw = true; }
+                        if (sh_slot != -1) {
+                            active_pups[sh_slot].type = -1; // Consume shield
+                            player.iframes = 45;
+                        } else {
+                            player.health -= 1;
+                            player.iframes = 45;
+                            if (player.health <= 0) { game_state = STATE_GAMEOVER; force_redraw = true; }
+                        }
                     }
                 }
             } else if (grenade.state == 2) {
@@ -276,19 +362,15 @@ int main(void) {
                     if (!zombies[i].active) {
                         zombies[i].active = true;
                         
-                        // Mega Zombie Logic (Wave 7+)
                         if (wave >= 7 && (simple_rand() % 10) == 0) {
-                            zombies[i].type = 2; 
-                            zombies[i].w = 8; zombies[i].h = 8; // Bigger
-                            zombies[i].health = 8 + wave;       // Massive Health
-                            zombies[i].damage = 3;              // 3 Bars Damage
-                            zombies[i].speed_delay = 5;         // Slower than Tanks
+                            zombies[i].type = 2; zombies[i].w = 8; zombies[i].h = 8;
+                            zombies[i].health = 8 + wave; zombies[i].damage = 3; zombies[i].speed_delay = 5;         
                         } else if (wave >= 3 && (simple_rand() % 5) == 0) {
-                            zombies[i].type = 1; zombies[i].health = 4 + (wave/3); zombies[i].damage = 2; zombies[i].speed_delay = 3; 
-                            zombies[i].w = 6; zombies[i].h = 6;
+                            zombies[i].type = 1; zombies[i].w = 6; zombies[i].h = 6;
+                            zombies[i].health = 4 + (wave/3); zombies[i].damage = 2; zombies[i].speed_delay = 3; 
                         } else {
-                            zombies[i].type = 0; zombies[i].health = (wave > 3) ? 2 : 1; zombies[i].damage = 1; zombies[i].speed_delay = 2;
-                            zombies[i].w = 6; zombies[i].h = 6;
+                            zombies[i].type = 0; zombies[i].w = 6; zombies[i].h = 6;
+                            zombies[i].health = (wave > 3) ? 2 : 1; zombies[i].damage = 1; zombies[i].speed_delay = 2;
                         }
 
                         int edge = simple_rand() % 4;
@@ -322,7 +404,24 @@ int main(void) {
 
             if (shoot_cooldown > 0) shoot_cooldown--;
             if ((curr_keys & KEY_A) && shoot_cooldown == 0) {
-                if (player.weapon == 0) { 
+                if (has_biggun) {
+                    int spawn_count = 0;
+                    for (int i = 0; i < MAX_BULLETS && spawn_count < 4; i++) {
+                        if (!bullets[i].active) {
+                            bullets[i].active = true;
+                            bullets[i].x = player.x + 2; bullets[i].y = player.y + 2;
+                            if (spawn_count == 0) { bullets[i].dx = 0; bullets[i].dy = -4; } 
+                            else if (spawn_count == 1) { bullets[i].dx = 0; bullets[i].dy = 4; } 
+                            else if (spawn_count == 2) { bullets[i].dx = -4; bullets[i].dy = 0; } 
+                            else { bullets[i].dx = 4; bullets[i].dy = 0; } 
+                            spawn_count++;
+                        }
+                    }
+                    shoot_cooldown = 6; 
+                    active_pups[bg_slot].value--;
+                    if (active_pups[bg_slot].value <= 0) active_pups[bg_slot].type = -1;
+                }
+                else if (player.weapon == 0) { 
                     for (int i = 0; i < MAX_BULLETS; i++) {
                         if (!bullets[i].active) {
                             bullets[i].active = true;
@@ -365,7 +464,7 @@ int main(void) {
                     if (!zombies[z].active) continue;
                     if (check_collision(bullets[i].x, bullets[i].y, 2, 2, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
                         bullets[i].active = false;
-                        zombies[z].health--;
+                        zombies[z].health -= (has_insta ? 100 : 1);
                         if (zombies[z].health <= 0) kill_zombie(z);
                         break;
                     }
@@ -377,39 +476,46 @@ int main(void) {
                 if (!zombies[i].active) continue;
                 zombies[i].prev_x = zombies[i].x; zombies[i].prev_y = zombies[i].y;
 
-                if (zombie_move_timer % zombies[i].speed_delay == 0) {
-                    int target_x = (grenade.state == 1) ? grenade.x : player.x;
-                    int target_y = (grenade.state == 1) ? grenade.y : player.y;
+                if (!has_freeze) {
+                    if (zombie_move_timer % zombies[i].speed_delay == 0) {
+                        int target_x = (grenade.state == 1) ? grenade.x : player.x;
+                        int target_y = (grenade.state == 1) ? grenade.y : player.y;
 
-                    int zmx = 0, zmy = 0;
-                    if (zombies[i].x < target_x) zmx = 1;
-                    else if (zombies[i].x > target_x) zmx = -1;
-                    if (zombies[i].y < target_y) zmy = 1;
-                    else if (zombies[i].y > target_y) zmy = -1;
+                        int zmx = 0, zmy = 0;
+                        if (zombies[i].x < target_x) zmx = 1;
+                        else if (zombies[i].x > target_x) zmx = -1;
+                        if (zombies[i].y < target_y) zmy = 1;
+                        else if (zombies[i].y > target_y) zmy = -1;
 
-                    int orig_x = zombies[i].x;
-                    zombies[i].x += zmx;
-                    if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
-                        zombies[i].x = orig_x; 
-                        if (zmy == 0) zmy = (target_y > zombies[i].y) ? 1 : -1; 
-                    }
+                        int orig_x = zombies[i].x;
+                        zombies[i].x += zmx;
+                        if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
+                            zombies[i].x = orig_x; 
+                            if (zmy == 0) zmy = (target_y > zombies[i].y) ? 1 : -1; 
+                        }
 
-                    int orig_y = zombies[i].y;
-                    zombies[i].y += zmy;
-                    if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
-                        zombies[i].y = orig_y; 
-                        if (zmx == 0) {
-                            zmx = (target_x > zombies[i].x) ? 1 : -1;
-                            zombies[i].x += zmx;
-                            if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) zombies[i].x = orig_x;
+                        int orig_y = zombies[i].y;
+                        zombies[i].y += zmy;
+                        if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
+                            zombies[i].y = orig_y; 
+                            if (zmx == 0) {
+                                zmx = (target_x > zombies[i].x) ? 1 : -1;
+                                zombies[i].x += zmx;
+                                if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) zombies[i].x = orig_x;
+                            }
                         }
                     }
-                }
 
-                if (grenade.state != 1 && player.iframes == 0 && check_collision(player.x, player.y, player.w, player.h, zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
-                    player.health -= zombies[i].damage;
-                    player.iframes = 45; 
-                    if (player.health <= 0) { game_state = STATE_GAMEOVER; force_redraw = true; }
+                    if (grenade.state != 1 && player.iframes == 0 && check_collision(player.x, player.y, player.w, player.h, zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
+                        if (sh_slot != -1) {
+                            active_pups[sh_slot].type = -1;
+                            player.iframes = 45;
+                        } else {
+                            player.health -= zombies[i].damage;
+                            player.iframes = 45; 
+                            if (player.health <= 0) { game_state = STATE_GAMEOVER; force_redraw = true; }
+                        }
+                    }
                 }
             }
         }
@@ -486,23 +592,39 @@ int main(void) {
             }
 
             // HUD Refresh
-            draw_rect(2, 2, 40, 6, COLOR_BLACK); 
             draw_rect(4, 3, 30, 4, COLOR_RED);
             if (player.health > 0) draw_rect(4, 3, player.health * 6, 4, COLOR_GREEN);
             for (int i = 1; i < 5; i++) draw_rect(4 + (i * 6) - 1, 3, 1, 4, COLOR_BLACK);
 
+            // PowerUp Slots 
+            draw_rect(50, 2, 35, 10, COLOR_BLACK); // Clear Area
+            for(int i=0; i<3; i++) {
+                if (active_pups[i].type != -1) {
+                    uint16_t c = COLOR_WHITE;
+                    if (active_pups[i].type == 0) c = COLOR_YELLOW;
+                    else if (active_pups[i].type == 2) c = COLOR_RED;
+                    else if (active_pups[i].type == 3) c = COLOR_LIGHTBLUE;
+                    
+                    int h = (active_pups[i].value * 10) / active_pups[i].max_value;
+                    if (h <= 0 && active_pups[i].value > 0) h = 1;
+                    draw_rect(50 + i*10, 12 - h, 4, h, c);
+                }
+            }
+
             int gun_x = SCREEN_WIDTH / 2 - 20;
             draw_rect(gun_x, 2, 16, 6, COLOR_BLACK); 
-            if (player.weapon == 0) { 
+            bool has_bg = false;
+            for(int i=0; i<3; i++) if (active_pups[i].type == 2) has_bg = true;
+            
+            if (has_bg || player.weapon == 1) { 
+                draw_rect(gun_x + 3, 3, 8, 2, has_bg ? COLOR_RED : COLOR_ORANGE); 
+                draw_rect(gun_x + 3, 5, 2, 2, has_bg ? COLOR_RED : COLOR_ORANGE); 
+                draw_rect(gun_x + 7, 5, 3, 1, has_bg ? COLOR_RED : COLOR_ORANGE); 
+            } else { 
                 draw_rect(gun_x + 6, 3, 4, 2, COLOR_WHITE); 
                 draw_rect(gun_x + 6, 5, 2, 2, COLOR_WHITE); 
-            } else { 
-                draw_rect(gun_x + 3, 3, 8, 2, COLOR_ORANGE); 
-                draw_rect(gun_x + 3, 5, 2, 2, COLOR_ORANGE); 
-                draw_rect(gun_x + 7, 5, 3, 1, COLOR_ORANGE); 
-            }
+            } 
             
-            // Stacked Grenade HUD Icons
             draw_rect(130, 1, 16, 12, COLOR_BLACK); 
             if (player.grenades >= 1) {
                 draw_rect(135, 8, 4, 4, COLOR_DARKGREEN);
@@ -519,6 +641,31 @@ int main(void) {
             if (rnd_str[0] == '0') { rnd_str[0] = rnd_str[1]; rnd_str[1] = '\0'; }
             draw_text(rnd_str, 202, 2, COLOR_YELLOW);
 
+            // Draw Drops
+            for (int i=0; i<MAX_DROPS; i++) {
+                if (!drops[i].active) continue;
+                int dx = drops[i].x; int dy = drops[i].y;
+                uint16_t col = COLOR_GREEN; // Default Health
+                if (drops[i].type == 0) col = COLOR_YELLOW;
+                else if (drops[i].type == 1) col = COLOR_WHITE;
+                else if (drops[i].type == 2) col = COLOR_RED;
+                else if (drops[i].type == 3) col = COLOR_LIGHTBLUE;
+                else if (drops[i].type == 4) col = COLOR_DARKGREEN;
+                
+                if (drops[i].type == 0 || drops[i].type == 5) { 
+                    draw_rect(dx+1, dy, 2, 4, col); draw_rect(dx, dy+1, 4, 2, col);
+                } else if (drops[i].type == 1) { 
+                    draw_rect(dx+1, dy, 2, 4, col); draw_rect(dx, dy+2, 4, 1, col);
+                } else if (drops[i].type == 2) { 
+                    draw_rect(dx, dy+1, 4, 2, col); draw_rect(dx+1, dy+3, 1, 1, col);
+                } else if (drops[i].type == 3) { 
+                    draw_rect(dx, dy+1, 4, 2, col);
+                } else if (drops[i].type == 4) { 
+                    draw_rect(dx+1, dy, 2, 4, col); draw_rect(dx, dy+1, 4, 2, col);
+                }
+            }
+
+            // Active Grenade
             if (grenade.state == 1) {
                 draw_rect(grenade.x, grenade.y, 2, 2, COLOR_DARKGREEN);
             } else if (grenade.state == 2) {
