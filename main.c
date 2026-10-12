@@ -12,12 +12,13 @@
 
 #define SCREEN_WIDTH    240
 #define SCREEN_HEIGHT   160
-#define HUD_HEIGHT      14 // Pushed down to avoid screen notch
+#define HUD_HEIGHT      14 
 
 // Keys (Active Low)
 #define KEY_A           (1 << 0)
-#define KEY_START       (1 << 3)
+#define KEY_B           (1 << 1)
 #define KEY_SELECT      (1 << 2)
+#define KEY_START       (1 << 3)
 #define KEY_RIGHT       (1 << 4)
 #define KEY_LEFT        (1 << 5)
 #define KEY_UP          (1 << 6)
@@ -30,6 +31,7 @@
 #define COLOR_WHITE     RGB15(31, 31, 31)
 #define COLOR_RED       RGB15(31, 0, 0)
 #define COLOR_GREEN     RGB15(0, 31, 0)
+#define COLOR_DARKGREEN RGB15(0, 15, 0)
 #define COLOR_BLUE      RGB15(0, 15, 31)
 #define COLOR_YELLOW    RGB15(31, 31, 0)
 #define COLOR_ORANGE    RGB15(31, 15, 0)
@@ -58,14 +60,15 @@ typedef struct { const char* name; int wall_count; Rect walls[MAX_WALLS]; } MapD
 MapDef maps[4] = {
     { "FLAT", 0, {} },
     { "CORNERS", 8, {
-        {30, 45, 25, 8}, {47, 20, 8, 25},   // TL
-        {185, 45, 25, 8}, {185, 20, 8, 25}, // TR
-        {30, 115, 25, 8}, {47, 123, 8, 25}, // BL
-        {185, 115, 25, 8}, {185, 123, 8, 25}// BR
+        {30, 45, 25, 8}, {47, 20, 8, 25},   
+        {185, 45, 25, 8}, {185, 20, 8, 25}, 
+        {30, 115, 25, 8}, {47, 123, 8, 25}, 
+        {185, 115, 25, 8}, {185, 123, 8, 25}
     }},
     { "THIRDS", 4, {
-        {80, 14, 10, 62}, {80, 90, 10, 70},   // Small 14px gap in middle
-        {150, 14, 10, 62}, {150, 90, 10, 70}
+        // Walls shortened to allow 16px top and bottom gaps
+        {80, 30, 10, 46}, {80, 90, 10, 54},   
+        {150, 30, 10, 46}, {150, 90, 10, 54}
     }},
     { "PILLARS", 5, {
         {45, 35, 16, 16}, {179, 35, 16, 16},
@@ -74,9 +77,10 @@ MapDef maps[4] = {
     }}
 };
 
-typedef struct { int x, y, prev_x, prev_y, w, h, dx, dy, health, iframes, weapon; } Player;
+typedef struct { int x, y, prev_x, prev_y, w, h, dx, dy, health, iframes, weapon, grenades; } Player;
 typedef struct { int x, y, prev_x, prev_y, w, h, health, type, damage, speed_delay; bool active; } Zombie;
 typedef struct { int x, y, prev_x, prev_y, dx, dy; bool active; } Bullet;
+typedef struct { int x, y, timer, state; } Grenade; // state: 0=off, 1=ticking, 2=exploding
 
 int game_state = STATE_MAP_SELECT;
 int selected_map = 0;
@@ -148,12 +152,14 @@ int main(void) {
     Player player;
     Zombie zombies[MAX_ZOMBIES];
     Bullet bullets[MAX_BULLETS];
+    Grenade grenade;
 
     int zombies_to_spawn, zombies_spawned, zombies_alive;
     int shoot_cooldown = 0, zombie_move_timer = 0;
 
     void reset_game() {
-        player = (Player){120, 130, 120, 130, 6, 6, 0, -1, 5, 0, 0}; // Moved spawn down to avoid center pillar
+        player = (Player){120, 130, 120, 130, 6, 6, 0, -1, 5, 0, 0, 2}; // Player gets 2 grenades
+        grenade.state = 0;
         for (int i = 0; i < MAX_ZOMBIES; i++) { zombies[i].active = false; zombies[i].prev_x = -1; }
         for (int i = 0; i < MAX_BULLETS; i++) { bullets[i].active = false; bullets[i].prev_x = -1; }
         wave = 1; zombies_to_spawn = 4; zombies_spawned = 0; zombies_alive = 0;
@@ -186,6 +192,50 @@ int main(void) {
         else { // STATE_PLAY
             if (keys_pressed & KEY_START) { game_state = STATE_PAUSE; force_redraw = true; continue; }
             if (keys_pressed & KEY_R) player.weapon = !player.weapon;
+
+            // Grenade Deployment
+            if ((keys_pressed & KEY_B) && player.grenades > 0 && grenade.state == 0) {
+                player.grenades--;
+                grenade.state = 1; // Ticking
+                grenade.timer = 180; // 3 Seconds (60 FPS)
+                grenade.x = player.x + 2;
+                grenade.y = player.y + 2;
+            }
+
+            // Grenade Explosion Logic
+            if (grenade.state == 1) {
+                grenade.timer--;
+                if (grenade.timer <= 0) {
+                    grenade.state = 2; // Exploding
+                    grenade.timer = 10; // Frames explosion is on screen
+                    
+                    // Damage Zombies in blast radius (60x60 box)
+                    for(int z=0; z<MAX_ZOMBIES; z++) {
+                        if (zombies[z].active && check_collision(grenade.x - 30, grenade.y - 30, 60, 60, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
+                            zombies[z].health -= 2;
+                            if (zombies[z].health <= 0) {
+                                zombies[z].active = false;
+                                zombies[z].prev_x = zombies[z].x; 
+                                zombies[z].prev_y = zombies[z].y;
+                                zombies_alive--;
+                            }
+                        }
+                    }
+                    
+                    // Damage Player in blast radius
+                    if (player.iframes == 0 && check_collision(grenade.x - 30, grenade.y - 30, 60, 60, player.x, player.y, player.w, player.h)) {
+                        player.health -= 1;
+                        player.iframes = 45;
+                        if (player.health <= 0) { game_state = STATE_GAMEOVER; force_redraw = true; }
+                    }
+                }
+            } else if (grenade.state == 2) {
+                grenade.timer--;
+                if (grenade.timer <= 0) {
+                    grenade.state = 0;
+                    force_redraw = true; // Complete map redraw safely clears the massive blast mark
+                }
+            }
 
             if (zombies_alive == 0 && zombies_spawned >= zombies_to_spawn) {
                 wave++;
@@ -227,7 +277,6 @@ int main(void) {
             if (curr_keys & KEY_UP)    my = -1;
             if (curr_keys & KEY_DOWN)  my = 1;
             
-            // Strictly enforce 4-way cardinal aiming vector to prevent diagonal bullets
             if (mx != 0) { player.dx = mx; player.dy = 0; }
             else if (my != 0) { player.dx = 0; player.dy = my; }
 
@@ -300,33 +349,37 @@ int main(void) {
                 zombies[i].prev_x = zombies[i].x; zombies[i].prev_y = zombies[i].y;
 
                 if (zombie_move_timer % zombies[i].speed_delay == 0) {
-                    int zmx = 0, zmy = 0;
-                    if (zombies[i].x < player.x) zmx = 1;
-                    else if (zombies[i].x > player.x) zmx = -1;
-                    if (zombies[i].y < player.y) zmy = 1;
-                    else if (zombies[i].y > player.y) zmy = -1;
+                    // Monkey Bomb Hijack: If grenade is ticking, zombies swarm it instead of the player
+                    int target_x = (grenade.state == 1) ? grenade.x : player.x;
+                    int target_y = (grenade.state == 1) ? grenade.y : player.y;
 
-                    // Improved Zombie Wall Sliding Logic
+                    int zmx = 0, zmy = 0;
+                    if (zombies[i].x < target_x) zmx = 1;
+                    else if (zombies[i].x > target_x) zmx = -1;
+                    if (zombies[i].y < target_y) zmy = 1;
+                    else if (zombies[i].y > target_y) zmy = -1;
+
                     int orig_x = zombies[i].x;
                     zombies[i].x += zmx;
                     if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
-                        zombies[i].x = orig_x; // Rollback
-                        if (zmy == 0) zmy = (player.y > zombies[i].y) ? 1 : -1; // Force perpendicular slide
+                        zombies[i].x = orig_x; 
+                        if (zmy == 0) zmy = (target_y > zombies[i].y) ? 1 : -1; 
                     }
 
                     int orig_y = zombies[i].y;
                     zombies[i].y += zmy;
                     if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
-                        zombies[i].y = orig_y; // Rollback
+                        zombies[i].y = orig_y; 
                         if (zmx == 0) {
-                            zmx = (player.x > zombies[i].x) ? 1 : -1;
+                            zmx = (target_x > zombies[i].x) ? 1 : -1;
                             zombies[i].x += zmx;
                             if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) zombies[i].x = orig_x;
                         }
                     }
                 }
 
-                if (player.iframes == 0 && check_collision(player.x, player.y, player.w, player.h, zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
+                // If Grenade is ticking, Zombies don't damage player even if they touch them (Classic Monkey Bomb)
+                if (grenade.state != 1 && player.iframes == 0 && check_collision(player.x, player.y, player.w, player.h, zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
                     player.health -= zombies[i].damage;
                     player.iframes = 45; 
                     if (player.health <= 0) { game_state = STATE_GAMEOVER; force_redraw = true; }
@@ -384,7 +437,6 @@ int main(void) {
                 draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_DARKGRAY);
                 draw_rect(0, 0, SCREEN_WIDTH, HUD_HEIGHT, COLOR_BLACK); 
                 
-                // Draw map walls ONCE to completely eliminate flickering
                 for (int i = 0; i < maps[selected_map].wall_count; i++) {
                     Rect wall = maps[selected_map].walls[i];
                     draw_rect(wall.x, wall.y, wall.w, wall.h, COLOR_LIGHTGRAY);
@@ -412,7 +464,7 @@ int main(void) {
             if (player.health > 0) draw_rect(4, 3, player.health * 6, 4, COLOR_GREEN);
             for (int i = 1; i < 5; i++) draw_rect(4 + (i * 6) - 1, 3, 1, 4, COLOR_BLACK);
 
-            int gun_x = SCREEN_WIDTH / 2 - 8;
+            int gun_x = SCREEN_WIDTH / 2 - 20;
             draw_rect(gun_x, 2, 16, 6, COLOR_BLACK); 
             if (player.weapon == 0) { 
                 draw_rect(gun_x + 6, 3, 4, 2, COLOR_WHITE); 
@@ -423,11 +475,25 @@ int main(void) {
                 draw_rect(gun_x + 7, 5, 3, 1, COLOR_ORANGE); 
             }
             
+            // Grenade HUD
+            draw_rect(130, 2, 30, 6, COLOR_BLACK);
+            draw_text("G:", 135, 2, COLOR_WHITE);
+            char g_str[2] = {player.grenades + '0', 0};
+            draw_text(g_str, 151, 2, COLOR_DARKGREEN);
+            
             draw_rect(170, 2, 70, 6, COLOR_BLACK); 
-            draw_text("RND:", 180, 2, COLOR_WHITE);
+            draw_text("RND:", 170, 2, COLOR_WHITE);
             char rnd_str[3] = {(wave / 10) + '0', (wave % 10) + '0', 0};
             if (rnd_str[0] == '0') { rnd_str[0] = rnd_str[1]; rnd_str[1] = '\0'; }
-            draw_text(rnd_str, 212, 2, COLOR_YELLOW);
+            draw_text(rnd_str, 202, 2, COLOR_YELLOW);
+
+            // Active Grenade Drawing
+            if (grenade.state == 1) {
+                draw_rect(grenade.x, grenade.y, 2, 2, COLOR_DARKGREEN);
+            } else if (grenade.state == 2) {
+                // Flash Orange and Red while exploding
+                draw_rect(grenade.x - 30, grenade.y - 30, 60, 60, (grenade.timer % 4 > 1) ? COLOR_ORANGE : COLOR_RED);
+            }
 
             for (int i = 0; i < MAX_BULLETS; i++) {
                 if (bullets[i].active) draw_rect(bullets[i].x, bullets[i].y, 2, 2, COLOR_WHITE);
