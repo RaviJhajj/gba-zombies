@@ -83,7 +83,7 @@ typedef struct { int x, y, prev_x, prev_y, w, h, health, type, damage, speed_del
 typedef struct { int x, y, prev_x, prev_y, dx, dy; bool active; } Bullet;
 typedef struct { int x, y, timer, state; } Grenade; 
 typedef struct { int x, y, type, timer; bool active; } Drop;
-typedef struct { int type, value, max_value; } ActivePowerUp; // type -1 is empty
+typedef struct { int type, value, max_value; } ActivePowerUp; 
 
 Player player;
 Zombie zombies[MAX_ZOMBIES];
@@ -161,7 +161,6 @@ void kill_zombie(int z_idx) {
     zombies[z_idx].prev_y = zombies[z_idx].y;
     zombies_alive--;
 
-    // Drop Logic
     kill_count_since_drop++;
     int prob = 0;
     if (kill_count_since_drop >= 20) prob = 100;
@@ -175,7 +174,7 @@ void kill_zombie(int z_idx) {
                 drops[i].active = true;
                 drops[i].x = zombies[z_idx].x + 1;
                 drops[i].y = zombies[z_idx].y + 1;
-                drops[i].timer = 300; // 5 Seconds
+                drops[i].timer = 300; 
                 drops[i].type = simple_rand() % 6; 
                 break;
             }
@@ -185,7 +184,8 @@ void kill_zombie(int z_idx) {
     if (zombies[z_idx].type == 2) { 
         int spawned = 0;
         for (int new_z = 0; new_z < MAX_ZOMBIES && spawned < 4; new_z++) {
-            if (!zombies[new_z].active) {
+            // Prevent overwriting the dying mega zombie's coordinate data
+            if (!zombies[new_z].active && new_z != z_idx) {
                 zombies[new_z].active = true;
                 zombies[new_z].type = 0; 
                 zombies[new_z].health = (wave > 3) ? 2 : 1;
@@ -261,7 +261,6 @@ int main(void) {
             if (keys_pressed & KEY_START) { game_state = STATE_PAUSE; force_redraw = true; continue; }
             if (keys_pressed & KEY_R) player.weapon = !player.weapon;
 
-            // PowerUp Timer Logic
             for(int i = 0; i < 3; i++) {
                 if (active_pups[i].type == 1 || active_pups[i].type == 3) {
                     active_pups[i].value--;
@@ -269,7 +268,6 @@ int main(void) {
                 }
             }
 
-            // Status Checkers
             bool has_insta = false;
             bool has_freeze = false;
             bool has_biggun = false;
@@ -283,7 +281,6 @@ int main(void) {
                 if (active_pups[i].type == 3) has_freeze = true;
             }
 
-            // Process Active Drops & Pickups
             for(int i=0; i<MAX_DROPS; i++) {
                 if (!drops[i].active) continue;
                 drops[i].timer--;
@@ -301,7 +298,6 @@ int main(void) {
                     if (t == 4) { if (player.grenades < 2) player.grenades++; }
                     else if (t == 5) { if (player.health < 5) player.health++; }
                     else {
-                        // Find empty slot
                         for(int s=0; s<3; s++) {
                             if (active_pups[s].type == -1) {
                                 active_pups[s].type = t;
@@ -336,7 +332,7 @@ int main(void) {
                     }
                     if (player.iframes == 0 && check_collision(grenade.x - 30, grenade.y - 30, 60, 60, player.x, player.y, player.w, player.h)) {
                         if (sh_slot != -1) {
-                            active_pups[sh_slot].type = -1; // Consume shield
+                            active_pups[sh_slot].type = -1; 
                             player.iframes = 45;
                         } else {
                             player.health -= 1;
@@ -487,6 +483,19 @@ int main(void) {
                         if (zombies[i].y < target_y) zmy = 1;
                         else if (zombies[i].y > target_y) zmy = -1;
 
+                        // Anti-stacking pushing logic
+                        for (int j = 0; j < MAX_ZOMBIES; j++) {
+                            if (i != j && zombies[j].active) {
+                                int dx = zombies[i].x - zombies[j].x;
+                                int dy = zombies[i].y - zombies[j].y;
+                                if (dx*dx + dy*dy < 16) { 
+                                    if (dx != 0) zmx = (dx > 0) ? 1 : -1;
+                                    if (dy != 0) zmy = (dy > 0) ? 1 : -1;
+                                    break;
+                                }
+                            }
+                        }
+
                         int orig_x = zombies[i].x;
                         zombies[i].x += zmx;
                         if (map_collision(zombies[i].x, zombies[i].y, zombies[i].w, zombies[i].h)) {
@@ -591,13 +600,11 @@ int main(void) {
                 }
             }
 
-            // HUD Refresh
             draw_rect(4, 3, 30, 4, COLOR_RED);
             if (player.health > 0) draw_rect(4, 3, player.health * 6, 4, COLOR_GREEN);
             for (int i = 1; i < 5; i++) draw_rect(4 + (i * 6) - 1, 3, 1, 4, COLOR_BLACK);
 
-            // PowerUp Slots 
-            draw_rect(50, 2, 35, 10, COLOR_BLACK); // Clear Area
+            draw_rect(50, 2, 35, 10, COLOR_BLACK); 
             for(int i=0; i<3; i++) {
                 if (active_pups[i].type != -1) {
                     uint16_t c = COLOR_WHITE;
@@ -641,11 +648,10 @@ int main(void) {
             if (rnd_str[0] == '0') { rnd_str[0] = rnd_str[1]; rnd_str[1] = '\0'; }
             draw_text(rnd_str, 202, 2, COLOR_YELLOW);
 
-            // Draw Drops
             for (int i=0; i<MAX_DROPS; i++) {
                 if (!drops[i].active) continue;
                 int dx = drops[i].x; int dy = drops[i].y;
-                uint16_t col = COLOR_GREEN; // Default Health
+                uint16_t col = COLOR_GREEN; 
                 if (drops[i].type == 0) col = COLOR_YELLOW;
                 else if (drops[i].type == 1) col = COLOR_WHITE;
                 else if (drops[i].type == 2) col = COLOR_RED;
@@ -665,7 +671,6 @@ int main(void) {
                 }
             }
 
-            // Active Grenade
             if (grenade.state == 1) {
                 draw_rect(grenade.x, grenade.y, 2, 2, COLOR_DARKGREEN);
             } else if (grenade.state == 2) {
