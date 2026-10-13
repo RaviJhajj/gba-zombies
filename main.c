@@ -272,7 +272,8 @@ int main(void) {
     int shoot_cooldown = 0, zombie_move_timer = 0;
 
     void reset_game() {
-        player = (Player){120, 130, 120, 130, 6, 6, 0, -1, 5, 0, 0, 2, 0}; 
+        // Updated starting Y position to 142 to avoid spawning inside bottom walls on the Snake map
+        player = (Player){120, 142, 120, 142, 6, 6, 0, -1, 5, 0, 0, 2, 0}; 
         grenade.state = 0;
         kill_count_since_drop = 0;
         for (int i = 0; i < MAX_ZOMBIES; i++) { zombies[i].active = false; zombies[i].prev_x = -1; zombies[i].slowed = false; }
@@ -724,6 +725,7 @@ int main(void) {
         else { // STATE_PLAY
             if (force_redraw) {
                 draw_rect(0, HUD_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HUD_HEIGHT, COLOR_DARKGRAY);
+                draw_rect(0, 0, SCREEN_WIDTH, HUD_HEIGHT, COLOR_BLACK); // Restored full HUD clear to force redraw
                 for (int i = 0; i < maps[selected_map].wall_count; i++) {
                     Rect wall = maps[selected_map].walls[i];
                     draw_arena_rect(wall.x, wall.y, wall.w, wall.h, COLOR_LIGHTGRAY);
@@ -734,6 +736,23 @@ int main(void) {
                 for (int i = 0; i < MAX_BULLETS; i++) {
                     if (bullets[i].prev_x != -1) {
                         draw_arena_rect(bullets[i].prev_x, bullets[i].prev_y, bullets[i].w, bullets[i].h, COLOR_DARKGRAY);
+                        
+                        // NEW: Redraw wall overlap if a piercing bullet left a blank trail through it
+                        if (bullets[i].pierce) {
+                            for (int j = 0; j < maps[selected_map].wall_count; j++) {
+                                Rect wall = maps[selected_map].walls[j];
+                                if (check_collision(bullets[i].prev_x, bullets[i].prev_y, bullets[i].w, bullets[i].h, wall.x, wall.y, wall.w, wall.h)) {
+                                    int ix = (bullets[i].prev_x > wall.x) ? bullets[i].prev_x : wall.x;
+                                    int iy = (bullets[i].prev_y > wall.y) ? bullets[i].prev_y : wall.y;
+                                    int iw = ((bullets[i].prev_x + bullets[i].w < wall.x + wall.w) ? bullets[i].prev_x + bullets[i].w : wall.x + wall.w) - ix;
+                                    int ih = ((bullets[i].prev_y + bullets[i].h < wall.y + wall.h) ? bullets[i].prev_y + bullets[i].h : wall.y + wall.h) - iy;
+                                    if (iw > 0 && ih > 0) {
+                                        draw_arena_rect(ix, iy, iw, ih, COLOR_LIGHTGRAY);
+                                    }
+                                }
+                            }
+                        }
+
                         if (!bullets[i].active) bullets[i].prev_x = -1;
                     }
                 }
@@ -745,12 +764,12 @@ int main(void) {
                 }
             }
 
-            draw_rect(0, 0, SCREEN_WIDTH, HUD_HEIGHT, COLOR_BLACK); 
-
+            // Localized HUD clears restored to prevent clipping/blind spots
             draw_rect(4, 3, 30, 4, COLOR_RED);
             if (player.health > 0) draw_rect(4, 3, player.health * 6, 4, COLOR_GREEN);
             for (int i = 1; i < 5; i++) draw_rect(4 + (i * 6) - 1, 3, 1, 4, COLOR_BLACK);
 
+            draw_rect(50, 2, 35, 10, COLOR_BLACK); 
             for(int i=0; i<3; i++) {
                 if (active_pups[i].type != -1) {
                     uint16_t c = COLOR_WHITE;
@@ -764,6 +783,7 @@ int main(void) {
             }
 
             int gun_x = SCREEN_WIDTH / 2 - 20;
+            draw_rect(gun_x, 2, 16, 8, COLOR_BLACK); 
             bool has_bg = false;
             for(int i=0; i<3; i++) if (active_pups[i].type == 2) has_bg = true;
             
@@ -792,9 +812,11 @@ int main(void) {
             else if (selected_loadout == 3) g_col = COLOR_LIGHTGRAY;
             else if (selected_loadout == 4) g_col = COLOR_YELLOW;
 
+            draw_rect(130, 1, 16, 12, COLOR_BLACK); 
             if (player.grenades >= 1) { draw_rect(135, 8, 4, 4, g_col); draw_rect(136, 7, 2, 1, COLOR_WHITE); }
             if (player.grenades >= 2) { draw_rect(135, 2, 4, 4, g_col); draw_rect(136, 1, 2, 1, COLOR_WHITE); }
             
+            draw_rect(170, 2, 70, 6, COLOR_BLACK); 
             draw_text("RND:", 170, 2, COLOR_WHITE, 1);
             char rnd_str[4];
             if (wave < 10) { rnd_str[0] = wave + '0'; rnd_str[1] = '\0'; }
