@@ -119,6 +119,7 @@ static inline void vsync() {
     while (REG_VCOUNT < 160);
 }
 
+// Draw rect specifically for UI and Screen Clears (Full Screen)
 void draw_rect(int x, int y, int w, int h, uint16_t color) {
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
@@ -130,6 +131,17 @@ void draw_rect(int x, int y, int w, int h, uint16_t color) {
         int offset = (y + j) * SCREEN_WIDTH + x;
         for (int i = 0; i < w; i++) VRAM[offset + i] = color;
     }
+}
+
+// Specialized clipping function ensuring entities NEVER bleed into the HUD
+void draw_arena_rect(int x, int y, int w, int h, uint16_t color) {
+    if (y < HUD_HEIGHT) { 
+        int diff = HUD_HEIGHT - y; 
+        y = HUD_HEIGHT; 
+        h -= diff; 
+    }
+    if (h <= 0) return;
+    draw_rect(x, y, w, h, color);
 }
 
 void draw_text(const char* str, int x, int y, uint16_t color, int scale) {
@@ -185,9 +197,8 @@ void spawn_bullet(int x, int y, int dx, int dy, int life, int dmg, int w, int h)
 
 void kill_zombie(int z_idx) {
     zombies[z_idx].active = false;
-    // Erase body IMMEDIATELY to prevent slot-recycling pixel artifacts
-    draw_rect(zombies[z_idx].prev_x, zombies[z_idx].prev_y, zombies[z_idx].w, zombies[z_idx].h, COLOR_DARKGRAY);
-    draw_rect(zombies[z_idx].x, zombies[z_idx].y, zombies[z_idx].w, zombies[z_idx].h, COLOR_DARKGRAY);
+    draw_arena_rect(zombies[z_idx].prev_x, zombies[z_idx].prev_y, zombies[z_idx].w, zombies[z_idx].h, COLOR_DARKGRAY);
+    draw_arena_rect(zombies[z_idx].x, zombies[z_idx].y, zombies[z_idx].w, zombies[z_idx].h, COLOR_DARKGRAY);
     zombies_alive--;
 
     kill_count_since_drop++;
@@ -204,12 +215,16 @@ void kill_zombie(int z_idx) {
                 drops[i].x = zombies[z_idx].x + 1;
                 drops[i].y = zombies[z_idx].y + 1;
                 drops[i].timer = 300; 
-                drops[i].type = simple_rand() % 7; 
+                
+                // Roll out of 13 to make Nuke half as likely
+                int roll = simple_rand() % 13;
+                drops[i].type = roll / 2; // 0-5 get 2 slots, 6 (Nuke) gets 1 slot
                 break;
             }
         }
     }
 
+    // Mega Zombie Death Spawn
     if (zombies[z_idx].type == 2 && !nuke_active) { 
         int spawned = 0;
         for (int new_z = 0; new_z < MAX_ZOMBIES && spawned < 4; new_z++) {
@@ -222,25 +237,15 @@ void kill_zombie(int z_idx) {
                 zombies[new_z].slowed = false;
                 zombies[new_z].w = 6; zombies[new_z].h = 6;
                 
+                // Spawn safely inside the Mega Zombie's 8x8 footprint to guarantee no wall clipping
                 int ox = 0, oy = 0;
-                if (spawned == 0) oy = -8;
-                else if (spawned == 1) oy = 8;
-                else if (spawned == 2) ox = -8;
-                else if (spawned == 3) ox = 8;
+                if (spawned == 0) { ox = 0; oy = 0; }
+                else if (spawned == 1) { ox = 2; oy = 0; }
+                else if (spawned == 2) { ox = 0; oy = 2; }
+                else if (spawned == 3) { ox = 2; oy = 2; }
 
                 zombies[new_z].x = zombies[z_idx].x + ox;
                 zombies[new_z].y = zombies[z_idx].y + oy;
-
-                if (zombies[new_z].x < 0) zombies[new_z].x = 0;
-                if (zombies[new_z].x > SCREEN_WIDTH - 6) zombies[new_z].x = SCREEN_WIDTH - 6;
-                if (zombies[new_z].y < HUD_HEIGHT) zombies[new_z].y = HUD_HEIGHT;
-                if (zombies[new_z].y > SCREEN_HEIGHT - 6) zombies[new_z].y = SCREEN_HEIGHT - 6;
-
-                // Fallback to exactly on the mega zombie body if an obstacle is in the way
-                if (map_collision(zombies[new_z].x, zombies[new_z].y, 6, 6)) {
-                    zombies[new_z].x = zombies[z_idx].x;
-                    zombies[new_z].y = zombies[z_idx].y;
-                }
 
                 zombies[new_z].prev_x = zombies[new_z].x;
                 zombies[new_z].prev_y = zombies[new_z].y;
@@ -332,13 +337,13 @@ int main(void) {
                 drops[i].timer--;
                 if (drops[i].timer <= 0) {
                     drops[i].active = false;
-                    draw_rect(drops[i].x, drops[i].y, 6, 6, COLOR_DARKGRAY);
+                    draw_arena_rect(drops[i].x, drops[i].y, 6, 6, COLOR_DARKGRAY);
                     continue;
                 }
                 
                 if (check_collision(player.x, player.y, player.w, player.h, drops[i].x, drops[i].y, 6, 6)) {
                     drops[i].active = false;
-                    draw_rect(drops[i].x, drops[i].y, 6, 6, COLOR_DARKGRAY);
+                    draw_arena_rect(drops[i].x, drops[i].y, 6, 6, COLOR_DARKGRAY);
                     
                     int t = drops[i].type;
                     if (t == 4) { if (player.grenades < 2) player.grenades++; }
@@ -575,7 +580,6 @@ int main(void) {
                             }
                         }
 
-                        // Strict clamping to prevent falling off top map boundaries due to anti-stacking physics
                         if (zombies[i].x < 0) zombies[i].x = 0;
                         if (zombies[i].x > SCREEN_WIDTH - zombies[i].w) zombies[i].x = SCREEN_WIDTH - zombies[i].w;
                         if (zombies[i].y < HUD_HEIGHT) zombies[i].y = HUD_HEIGHT;
@@ -672,35 +676,34 @@ int main(void) {
         else { // STATE_PLAY
             if (force_redraw) {
                 draw_rect(0, HUD_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HUD_HEIGHT, COLOR_DARKGRAY);
+                draw_rect(0, 0, SCREEN_WIDTH, HUD_HEIGHT, COLOR_BLACK); 
                 for (int i = 0; i < maps[selected_map].wall_count; i++) {
                     Rect wall = maps[selected_map].walls[i];
-                    draw_rect(wall.x, wall.y, wall.w, wall.h, COLOR_LIGHTGRAY);
+                    draw_arena_rect(wall.x, wall.y, wall.w, wall.h, COLOR_LIGHTGRAY);
                 }
                 force_redraw = false;
             } else {
-                draw_rect(player.prev_x, player.prev_y, player.w, player.h, COLOR_DARKGRAY);
+                draw_arena_rect(player.prev_x, player.prev_y, player.w, player.h, COLOR_DARKGRAY);
                 for (int i = 0; i < MAX_BULLETS; i++) {
                     if (bullets[i].prev_x != -1) {
-                        draw_rect(bullets[i].prev_x, bullets[i].prev_y, bullets[i].w, bullets[i].h, COLOR_DARKGRAY);
+                        draw_arena_rect(bullets[i].prev_x, bullets[i].prev_y, bullets[i].w, bullets[i].h, COLOR_DARKGRAY);
                         if (!bullets[i].active) bullets[i].prev_x = -1;
                     }
                 }
                 for (int i = 0; i < MAX_ZOMBIES; i++) {
                     if (zombies[i].prev_x != -1) {
-                        draw_rect(zombies[i].prev_x, zombies[i].prev_y, zombies[i].w, zombies[i].h, COLOR_DARKGRAY);
+                        draw_arena_rect(zombies[i].prev_x, zombies[i].prev_y, zombies[i].w, zombies[i].h, COLOR_DARKGRAY);
                         if (!zombies[i].active) zombies[i].prev_x = -1;
                     }
                 }
             }
 
-            // Draw solid black HUD block entirely over the top 14 pixels to block any zombie rendering bleeding
-            draw_rect(0, 0, SCREEN_WIDTH, HUD_HEIGHT, COLOR_BLACK); 
-
-            // HUD Refresh
+            // Safe localized HUD updates to prevent tearing
             draw_rect(4, 3, 30, 4, COLOR_RED);
             if (player.health > 0) draw_rect(4, 3, player.health * 6, 4, COLOR_GREEN);
             for (int i = 1; i < 5; i++) draw_rect(4 + (i * 6) - 1, 3, 1, 4, COLOR_BLACK);
 
+            draw_rect(50, 2, 35, 10, COLOR_BLACK); 
             for(int i=0; i<3; i++) {
                 if (active_pups[i].type != -1) {
                     uint16_t c = COLOR_WHITE;
@@ -714,6 +717,7 @@ int main(void) {
             }
 
             int gun_x = SCREEN_WIDTH / 2 - 20;
+            draw_rect(gun_x, 2, 16, 8, COLOR_BLACK); 
             bool has_bg = false;
             for(int i=0; i<3; i++) if (active_pups[i].type == 2) has_bg = true;
             
@@ -732,6 +736,7 @@ int main(void) {
                 else { draw_rect(gun_x + 3, 3, 8, 4, COLOR_YELLOW); } 
             }
             
+            draw_rect(130, 1, 16, 12, COLOR_BLACK); 
             uint16_t g_col = COLOR_DARKGREEN;
             if (selected_loadout == 1) g_col = COLOR_RED;
             else if (selected_loadout == 2) g_col = COLOR_CYAN;
@@ -739,6 +744,7 @@ int main(void) {
             if (player.grenades >= 1) { draw_rect(135, 8, 4, 4, g_col); draw_rect(136, 7, 2, 1, COLOR_WHITE); }
             if (player.grenades >= 2) { draw_rect(135, 2, 4, 4, g_col); draw_rect(136, 1, 2, 1, COLOR_WHITE); }
             
+            draw_rect(170, 2, 70, 6, COLOR_BLACK); 
             draw_text("RND:", 170, 2, COLOR_WHITE, 1);
             char rnd_str[4];
             if (wave < 10) { rnd_str[0] = wave + '0'; rnd_str[1] = '\0'; }
@@ -754,59 +760,59 @@ int main(void) {
                 else if (drops[i].type == 1) col = COLOR_WHITE;
                 else if (drops[i].type == 2) col = COLOR_RED;
                 else if (drops[i].type == 3) col = COLOR_LIGHTBLUE;
-                else if (drops[i].type == 4) col = COLOR_DARKBLUE; // Update 5
-                else if (drops[i].type == 6) col = COLOR_DARKGREEN; // Nuke
+                else if (drops[i].type == 4) col = COLOR_DARKBLUE; 
+                else if (drops[i].type == 6) col = COLOR_DARKGREEN; 
                 
                 if (drops[i].type == 0) { 
-                    draw_rect(dx, dy, 6, 6, col); draw_rect(dx+1, dy+1, 4, 4, COLOR_DARKGRAY); // Hollow Square
+                    draw_arena_rect(dx, dy, 6, 6, col); draw_arena_rect(dx+1, dy+1, 4, 4, COLOR_DARKGRAY); 
                 } else if (drops[i].type == 1) { 
-                    draw_rect(dx+1, dy, 2, 4, col); draw_rect(dx, dy+2, 4, 1, col);
+                    draw_arena_rect(dx+1, dy, 2, 4, col); draw_arena_rect(dx, dy+2, 4, 1, col);
                 } else if (drops[i].type == 2) { 
-                    draw_rect(dx, dy+1, 4, 2, col); draw_rect(dx+1, dy+3, 1, 1, col);
+                    draw_arena_rect(dx, dy+1, 4, 2, col); draw_arena_rect(dx+1, dy+3, 1, 1, col);
                 } else if (drops[i].type == 3) { 
-                    draw_rect(dx, dy+1, 4, 2, col);
+                    draw_arena_rect(dx, dy+1, 4, 2, col);
                 } else if (drops[i].type == 4 || drops[i].type == 5) { 
-                    draw_rect(dx+1, dy, 2, 4, col); draw_rect(dx, dy+1, 4, 2, col);
-                } else if (drops[i].type == 6) { // Bomb Shape
-                    draw_rect(dx+1, dy+2, 4, 4, col); draw_rect(dx+2, dy, 2, 2, col); 
+                    draw_arena_rect(dx+1, dy, 2, 4, col); draw_arena_rect(dx, dy+1, 4, 2, col);
+                } else if (drops[i].type == 6) { 
+                    draw_arena_rect(dx+1, dy+2, 4, 4, col); draw_arena_rect(dx+2, dy, 2, 2, col); 
                 }
             }
 
             if (grenade.state == 1) {
-                draw_rect(grenade.x, grenade.y, 2, 2, g_col);
+                draw_arena_rect(grenade.x, grenade.y, 2, 2, g_col);
             } else if (grenade.state == 2) {
                 if (selected_loadout == 2) {
-                    draw_rect(0, HUD_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_CYAN); 
+                    draw_arena_rect(0, HUD_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_CYAN); 
                 } else {
                     int r = (selected_loadout == 1) ? 80 : 60;
-                    draw_rect(grenade.x - (r/2), grenade.y - (r/2), r, r, (grenade.timer % 4 > 1) ? COLOR_ORANGE : COLOR_RED);
+                    draw_arena_rect(grenade.x - (r/2), grenade.y - (r/2), r, r, (grenade.timer % 4 > 1) ? COLOR_ORANGE : COLOR_RED);
                 }
             }
 
             for (int i = 0; i < MAX_BULLETS; i++) {
-                if (bullets[i].active) draw_rect(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h, COLOR_WHITE);
+                if (bullets[i].active) draw_arena_rect(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h, COLOR_WHITE);
             }
             
             for (int i = 0; i < MAX_ZOMBIES; i++) {
                 if (zombies[i].active) {
                     uint16_t z_col = (zombies[i].type == 2) ? COLOR_PURPLE : ((zombies[i].type == 1) ? COLOR_ORANGE : COLOR_RED);
-                    draw_rect(zombies[i].x + 1, zombies[i].y + 1, zombies[i].w - 2, zombies[i].h - 2, z_col); 
-                    draw_rect(zombies[i].x + 2, zombies[i].y + 2, zombies[i].w - 4, zombies[i].h - 4, COLOR_GREEN); 
+                    draw_arena_rect(zombies[i].x + 1, zombies[i].y + 1, zombies[i].w - 2, zombies[i].h - 2, z_col); 
+                    draw_arena_rect(zombies[i].x + 2, zombies[i].y + 2, zombies[i].w - 4, zombies[i].h - 4, COLOR_GREEN); 
                     
-                    if (player.x < zombies[i].x) { draw_rect(zombies[i].x, zombies[i].y + 1, 2, 1, z_col); draw_rect(zombies[i].x, zombies[i].y + zombies[i].h - 2, 2, 1, z_col); }
-                    else if (player.x > zombies[i].x) { draw_rect(zombies[i].x + zombies[i].w - 2, zombies[i].y + 1, 2, 1, z_col); draw_rect(zombies[i].x + zombies[i].w - 2, zombies[i].y + zombies[i].h - 2, 2, 1, z_col); }
-                    else if (player.y < zombies[i].y) { draw_rect(zombies[i].x + 1, zombies[i].y, 1, 2, z_col); draw_rect(zombies[i].x + zombies[i].w - 2, zombies[i].y, 1, 2, z_col); }
-                    else { draw_rect(zombies[i].x + 1, zombies[i].y + zombies[i].h - 2, 1, 2, z_col); draw_rect(zombies[i].x + zombies[i].w - 2, zombies[i].y + zombies[i].h - 2, 1, 2, z_col); }
+                    if (player.x < zombies[i].x) { draw_arena_rect(zombies[i].x, zombies[i].y + 1, 2, 1, z_col); draw_arena_rect(zombies[i].x, zombies[i].y + zombies[i].h - 2, 2, 1, z_col); }
+                    else if (player.x > zombies[i].x) { draw_arena_rect(zombies[i].x + zombies[i].w - 2, zombies[i].y + 1, 2, 1, z_col); draw_arena_rect(zombies[i].x + zombies[i].w - 2, zombies[i].y + zombies[i].h - 2, 2, 1, z_col); }
+                    else if (player.y < zombies[i].y) { draw_arena_rect(zombies[i].x + 1, zombies[i].y, 1, 2, z_col); draw_arena_rect(zombies[i].x + zombies[i].w - 2, zombies[i].y, 1, 2, z_col); }
+                    else { draw_arena_rect(zombies[i].x + 1, zombies[i].y + zombies[i].h - 2, 1, 2, z_col); draw_arena_rect(zombies[i].x + zombies[i].w - 2, zombies[i].y + zombies[i].h - 2, 1, 2, z_col); }
                 }
             }
 
             uint16_t p_col = (player.iframes % 4 > 1) ? COLOR_WHITE : COLOR_BLUE;
-            draw_rect(player.x + 1, player.y + 1, 4, 4, p_col); 
-            draw_rect(player.x + 2, player.y + 2, 2, 2, COLOR_SKIN); 
-            if (player.dx < 0) draw_rect(player.x, player.y + 2, 2, 2, COLOR_WHITE);
-            else if (player.dx > 0) draw_rect(player.x + 4, player.y + 2, 2, 2, COLOR_WHITE);
-            else if (player.dy < 0) draw_rect(player.x + 2, player.y, 2, 2, COLOR_WHITE);
-            else draw_rect(player.x + 2, player.y + 4, 2, 2, COLOR_WHITE);
+            draw_arena_rect(player.x + 1, player.y + 1, 4, 4, p_col); 
+            draw_arena_rect(player.x + 2, player.y + 2, 2, 2, COLOR_SKIN); 
+            if (player.dx < 0) draw_arena_rect(player.x, player.y + 2, 2, 2, COLOR_WHITE);
+            else if (player.dx > 0) draw_arena_rect(player.x + 4, player.y + 2, 2, 2, COLOR_WHITE);
+            else if (player.dy < 0) draw_arena_rect(player.x + 2, player.y, 2, 2, COLOR_WHITE);
+            else draw_arena_rect(player.x + 2, player.y + 4, 2, 2, COLOR_WHITE);
         }
     }
     return 0;
