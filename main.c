@@ -24,6 +24,7 @@
 #define KEY_UP          (1 << 6)
 #define KEY_DOWN        (1 << 7)
 #define KEY_R           (1 << 8)
+#define KEY_L           (1 << 9)
 
 // Colors
 #define RGB15(r, g, b)  ((uint16_t)(((r) & 0x1F) | (((g) & 0x1F) << 5) | (((b) & 0x1F) << 10)))
@@ -31,6 +32,7 @@
 #define COLOR_WHITE     RGB15(31, 31, 31)
 #define COLOR_RED       RGB15(31, 0, 0)
 #define COLOR_GREEN     RGB15(0, 31, 0)
+#define COLOR_LIGHTGREEN RGB15(15, 31, 15)
 #define COLOR_DARKGREEN RGB15(0, 15, 0)
 #define COLOR_BLUE      RGB15(0, 15, 31)
 #define COLOR_DARKBLUE  RGB15(0, 0, 15)
@@ -107,7 +109,14 @@ MapDef maps[9] = {
 
 const char* loadouts[5] = { "OPERATOR", "ASSAULT", "ASSASSIN", "NINJA", "SNIPER" };
 
-typedef struct { int x, y, prev_x, prev_y, w, h, dx, dy, health, iframes, weapon, grenades, ar_heat; } Player;
+typedef struct { 
+    int x, y, prev_x, prev_y, w, h, dx, dy, health, iframes, weapon, grenades; 
+    int ammo[2];
+    int max_ammo[2];
+    int reload_timer[2];
+    int reload_time[2];
+} Player;
+
 typedef struct { int x, y, prev_x, prev_y, w, h, health, type, damage, speed_delay; bool active, slowed; } Zombie;
 typedef struct { int x, y, prev_x, prev_y, dx, dy, w, h, life, dmg; bool active, pierce; uint64_t hit_mask; } Bullet;
 typedef struct { int x, y, timer, state; } Grenade; // 0=off, 1=ticking, 2=exploding, 3=armed trap
@@ -273,7 +282,31 @@ int main(void) {
     int shoot_cooldown = 0, zombie_move_timer = 0;
 
     void reset_game() {
-        player = (Player){120, 142, 120, 142, 6, 6, 0, -1, 5, 0, 0, 2, 0}; 
+        player = (Player){120, 142, 120, 142, 6, 6, 0, -1, 5, 0, 0, 2}; 
+        
+        // Initialize Ammo Stats based on Loadout
+        if (selected_loadout == 0) { // Operator
+            player.max_ammo[0] = 20; player.reload_time[0] = 60;
+            player.max_ammo[1] = 15; player.reload_time[1] = 120;
+        } else if (selected_loadout == 1) { // Assault
+            player.max_ammo[0] = 50; player.reload_time[0] = 90;
+            player.max_ammo[1] = -1; player.reload_time[1] = -1; // Melee
+        } else if (selected_loadout == 2) { // Assassin
+            player.max_ammo[0] = 20; player.reload_time[0] = 90;
+            player.max_ammo[1] = 10; player.reload_time[1] = 150;
+        } else if (selected_loadout == 3) { // Ninja
+            player.max_ammo[0] = 40; player.reload_time[0] = 120;
+            player.max_ammo[1] = -1; player.reload_time[1] = -1; // Melee
+        } else if (selected_loadout == 4) { // Sniper
+            player.max_ammo[0] = 7; player.reload_time[0] = 120;
+            player.max_ammo[1] = 20; player.reload_time[1] = 60;
+        }
+        
+        player.ammo[0] = player.max_ammo[0];
+        player.ammo[1] = player.max_ammo[1];
+        player.reload_timer[0] = 0;
+        player.reload_timer[1] = 0;
+
         grenade.state = 0;
         kill_count_since_drop = 0;
         for (int i = 0; i < MAX_ZOMBIES; i++) { zombies[i].active = false; zombies[i].prev_x = -1; zombies[i].slowed = false; }
@@ -322,8 +355,21 @@ int main(void) {
             if (keys_pressed & KEY_START) { game_state = STATE_PAUSE; force_redraw = true; continue; }
             if (keys_pressed & KEY_R) player.weapon = !player.weapon;
 
-            if (!(curr_keys & KEY_A) && player.ar_heat > 0) player.ar_heat -= 2;
-            if (player.ar_heat < 0) player.ar_heat = 0;
+            // Background Reload Execution
+            for(int i = 0; i < 2; i++) {
+                if (player.reload_timer[i] > 0) {
+                    player.reload_timer[i]--;
+                    if (player.reload_timer[i] <= 0) {
+                        player.ammo[i] = player.max_ammo[i];
+                    }
+                }
+            }
+
+            // Reload Trigger (Manual)
+            int c_wpn = player.weapon;
+            if ((keys_pressed & KEY_L) && player.max_ammo[c_wpn] != -1 && player.ammo[c_wpn] < player.max_ammo[c_wpn] && player.reload_timer[c_wpn] == 0) {
+                player.reload_timer[c_wpn] = player.reload_time[c_wpn];
+            }
 
             for(int i = 0; i < 3; i++) {
                 if (active_pups[i].type == 1 || active_pups[i].type == 3) {
@@ -504,7 +550,20 @@ int main(void) {
             if (player.y < HUD_HEIGHT || player.y > SCREEN_HEIGHT - 6 || map_collision(player.x, player.y, player.w, player.h)) player.y -= my;
 
             if (shoot_cooldown > 0) shoot_cooldown--;
-            if ((curr_keys & KEY_A) && shoot_cooldown == 0) {
+
+            // Ammo Verification before spawning bullets
+            bool can_shoot = false;
+            if (has_biggun) {
+                can_shoot = true; // Big gun overrides standard ammo
+            } else {
+                if (player.max_ammo[c_wpn] == -1) {
+                    can_shoot = true; // Infinite ammo (Melee weapons)
+                } else if (player.ammo[c_wpn] > 0 && player.reload_timer[c_wpn] == 0) {
+                    can_shoot = true; // Has ammo and not currently reloading
+                }
+            }
+
+            if ((curr_keys & KEY_A) && shoot_cooldown == 0 && can_shoot) {
                 int bx = player.x + 2; int by = player.y + 2;
                 int pdx = (player.dx == 0 && player.dy == 0) ? 0 : player.dx;
                 int pdy = (player.dx == 0 && player.dy == 0) ? -1 : player.dy;
@@ -516,6 +575,8 @@ int main(void) {
                     active_pups[bg_slot].value -= 4;
                     if (active_pups[bg_slot].value <= 0) active_pups[bg_slot].type = -1;
                 } else {
+                    if (player.max_ammo[c_wpn] != -1) player.ammo[c_wpn]--;
+
                     if (selected_loadout == 0) { 
                         if (player.weapon == 0) { spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false); shoot_cooldown = 12; } 
                         else { 
@@ -529,9 +590,7 @@ int main(void) {
                         }
                     } else if (selected_loadout == 1) { 
                         if (player.weapon == 0) { 
-                            player.ar_heat += 6;
-                            if (player.ar_heat >= 120) { shoot_cooldown = 42; player.ar_heat = 0; }
-                            else { spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false); shoot_cooldown = 6; }
+                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false); shoot_cooldown = 6; 
                         } else { 
                             spawn_bullet(bx, by, 0, -4, 3, 1, 2, 2, false); spawn_bullet(bx, by, 0, 4, 3, 1, 2, 2, false);
                             spawn_bullet(bx, by, -4, 0, 3, 1, 2, 2, false); spawn_bullet(bx, by, 4, 0, 3, 1, 2, 2, false);
@@ -800,6 +859,30 @@ int main(void) {
                 else { draw_rect(gun_x + 6, 4, 4, 2, COLOR_WHITE); draw_rect(gun_x + 6, 6, 2, 2, COLOR_WHITE); } 
             }
             
+            // Render AMMO indicator next to gun
+            int c_wpn = player.weapon;
+            if (player.max_ammo[c_wpn] != -1) {
+                draw_rect(gun_x + 18, 2, 4, 10, COLOR_BLACK); 
+                int ah = 0;
+                uint16_t a_col = COLOR_LIGHTGREEN;
+                
+                if (player.reload_timer[c_wpn] > 0) {
+                    ah = ((player.reload_time[c_wpn] - player.reload_timer[c_wpn]) * 10) / player.reload_time[c_wpn];
+                    if (ah <= 0) ah = 1;
+                    a_col = COLOR_WHITE;
+                } else {
+                    ah = (player.ammo[c_wpn] * 10) / player.max_ammo[c_wpn];
+                    if (ah <= 0 && player.ammo[c_wpn] > 0) ah = 1;
+                    
+                    if (player.ammo[c_wpn] == 0) a_col = COLOR_RED;
+                    else if (player.ammo[c_wpn] <= player.max_ammo[c_wpn] * 0.2f) a_col = COLOR_ORANGE;
+                }
+                
+                if (ah > 0) draw_rect(gun_x + 18, 12 - ah, 4, ah, a_col);
+            } else {
+                draw_rect(gun_x + 18, 2, 4, 10, COLOR_BLACK); // Clear for infinite weapons
+            }
+
             uint16_t g_col = COLOR_DARKGREEN;
             if (selected_loadout == 1) g_col = COLOR_RED;
             else if (selected_loadout == 2) g_col = COLOR_CYAN;
