@@ -109,7 +109,7 @@ const char* loadouts[5] = { "OPERATOR", "ASSAULT", "ASSASSIN", "NINJA", "SNIPER"
 
 typedef struct { int x, y, prev_x, prev_y, w, h, dx, dy, health, iframes, weapon, grenades, ar_heat; } Player;
 typedef struct { int x, y, prev_x, prev_y, w, h, health, type, damage, speed_delay; bool active, slowed; } Zombie;
-typedef struct { int x, y, prev_x, prev_y, dx, dy, w, h, life, dmg; bool active, pierce; } Bullet;
+typedef struct { int x, y, prev_x, prev_y, dx, dy, w, h, life, dmg; bool active, pierce; uint64_t hit_mask; } Bullet;
 typedef struct { int x, y, timer, state; } Grenade; // 0=off, 1=ticking, 2=exploding, 3=armed trap
 typedef struct { int x, y, type, timer; bool active; } Drop;
 typedef struct { int type, value, max_value; } ActivePowerUp; 
@@ -203,6 +203,7 @@ void spawn_bullet(int x, int y, int dx, int dy, int life, int dmg, int w, int h,
             bullets[i].life = life; bullets[i].dmg = dmg;
             bullets[i].w = w; bullets[i].h = h;
             bullets[i].pierce = pierce;
+            bullets[i].hit_mask = 0;
             bullets[i].prev_x = -1;
             break;
         }
@@ -272,7 +273,6 @@ int main(void) {
     int shoot_cooldown = 0, zombie_move_timer = 0;
 
     void reset_game() {
-        // Updated starting Y position to 142 to avoid spawning inside bottom walls on the Snake map
         player = (Player){120, 142, 120, 142, 6, 6, 0, -1, 5, 0, 0, 2, 0}; 
         grenade.state = 0;
         kill_count_since_drop = 0;
@@ -371,7 +371,8 @@ int main(void) {
                             if (active_pups[s].type == -1) {
                                 active_pups[s].type = t;
                                 if (t == 0) { active_pups[s].value = 1; active_pups[s].max_value = 1; }
-                                else if (t == 1 || t == 3) { active_pups[s].value = 300; active_pups[s].max_value = 300; }
+                                else if (t == 1) { active_pups[s].value = 420; active_pups[s].max_value = 420; }
+                                else if (t == 3) { active_pups[s].value = 300; active_pups[s].max_value = 300; }
                                 else if (t == 2) { active_pups[s].value = 160; active_pups[s].max_value = 160; }
                                 break;
                             }
@@ -418,9 +419,10 @@ int main(void) {
                 if (grenade.timer <= 0) {
                     grenade.state = 2; grenade.timer = 10; 
                     int r = (selected_loadout == 1) ? 80 : 60; 
+                    int g_dmg = (selected_loadout == 1) ? 20 : 2; 
                     for(int z=0; z<MAX_ZOMBIES; z++) {
                         if (zombies[z].active && check_collision(grenade.x - (r/2), grenade.y - (r/2), r, r, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
-                            zombies[z].health -= (has_insta ? 100 : 2);
+                            zombies[z].health -= (has_insta ? 100 : g_dmg);
                             if (zombies[z].health <= 0) kill_zombie(z);
                         }
                     }
@@ -433,7 +435,6 @@ int main(void) {
                 grenade.timer--;
                 if (grenade.timer <= 0) { grenade.state = 0; force_redraw = true; }
                 else if (grenade.timer == 8 && selected_loadout == 4) {
-                    // Sniper explosion damage frame
                     for(int z=0; z<MAX_ZOMBIES; z++) {
                         if (zombies[z].active && check_collision(grenade.x - 15, grenade.y - 15, 30, 30, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
                             zombies[z].health -= (has_insta ? 100 : 15);
@@ -518,8 +519,12 @@ int main(void) {
                     if (selected_loadout == 0) { 
                         if (player.weapon == 0) { spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false); shoot_cooldown = 12; } 
                         else { 
-                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false); spawn_bullet(bx, by, pdx*3 + pdy, pdy*3 + pdx, 100, 1, 2, 2, false);
-                            spawn_bullet(bx, by, pdx*3 - pdy, pdy*3 - pdx, 100, 1, 2, 2, false); spawn_bullet(bx, by, pdx*2, pdy*2, 100, 1, 2, 2, false);
+                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false); 
+                            spawn_bullet(bx, by, pdx*3 + pdy, pdy*3 + pdx, 100, 1, 2, 2, false);
+                            spawn_bullet(bx, by, pdx*3 - pdy, pdy*3 - pdx, 100, 1, 2, 2, false); 
+                            spawn_bullet(bx, by, pdx*2 + pdy, pdy*2 + pdx, 100, 1, 2, 2, false); 
+                            spawn_bullet(bx, by, pdx*2 - pdy, pdy*2 - pdx, 100, 1, 2, 2, false); 
+                            spawn_bullet(bx, by, pdx*2, pdy*2, 100, 1, 2, 2, false);
                             shoot_cooldown = 35; 
                         }
                     } else if (selected_loadout == 1) { 
@@ -538,7 +543,7 @@ int main(void) {
                             shoot_cooldown = 15;
                         } else { 
                             int bw = (pdx != 0) ? 6 : 2; int bh = (pdy != 0) ? 6 : 2;
-                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 3, bw, bh, false); shoot_cooldown = 35;
+                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 3, bw, bh, false); shoot_cooldown = 30;
                         }
                     } else if (selected_loadout == 3) { // Ninja
                         if (player.weapon == 0) {
@@ -567,7 +572,7 @@ int main(void) {
                 bullets[i].x += bullets[i].dx; bullets[i].y += bullets[i].dy;
                 bullets[i].life--;
 
-                if (bullets[i].life <= 0 || bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH - bullets[i].w || bullets[i].y < HUD_HEIGHT || bullets[i].y > SCREEN_HEIGHT - bullets[i].h || (!bullets[i].pierce && map_collision(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h))) {
+                if (bullets[i].life <= 0 || bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH - bullets[i].w || bullets[i].y < HUD_HEIGHT || bullets[i].y > SCREEN_HEIGHT - bullets[i].h || map_collision(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h)) {
                     bullets[i].active = false;
                     continue;
                 }
@@ -575,10 +580,17 @@ int main(void) {
                 for (int z = 0; z < MAX_ZOMBIES; z++) {
                     if (!zombies[z].active) continue;
                     if (check_collision(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
-                        bullets[i].active = false;
+                        if (bullets[i].pierce) {
+                            if (bullets[i].hit_mask & (1ULL << z)) continue; // Already hit this zombie, pass through
+                            bullets[i].hit_mask |= (1ULL << z);
+                        } else {
+                            bullets[i].active = false;
+                        }
+
                         zombies[z].health -= (has_insta ? 100 : bullets[i].dmg);
                         if (zombies[z].health <= 0) kill_zombie(z);
-                        break;
+                        
+                        if (!bullets[i].pierce) break; 
                     }
                 }
             }
@@ -725,7 +737,7 @@ int main(void) {
         else { // STATE_PLAY
             if (force_redraw) {
                 draw_rect(0, HUD_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HUD_HEIGHT, COLOR_DARKGRAY);
-                draw_rect(0, 0, SCREEN_WIDTH, HUD_HEIGHT, COLOR_BLACK); // Restored full HUD clear to force redraw
+                draw_rect(0, 0, SCREEN_WIDTH, HUD_HEIGHT, COLOR_BLACK); 
                 for (int i = 0; i < maps[selected_map].wall_count; i++) {
                     Rect wall = maps[selected_map].walls[i];
                     draw_arena_rect(wall.x, wall.y, wall.w, wall.h, COLOR_LIGHTGRAY);
@@ -736,23 +748,6 @@ int main(void) {
                 for (int i = 0; i < MAX_BULLETS; i++) {
                     if (bullets[i].prev_x != -1) {
                         draw_arena_rect(bullets[i].prev_x, bullets[i].prev_y, bullets[i].w, bullets[i].h, COLOR_DARKGRAY);
-                        
-                        // NEW: Redraw wall overlap if a piercing bullet left a blank trail through it
-                        if (bullets[i].pierce) {
-                            for (int j = 0; j < maps[selected_map].wall_count; j++) {
-                                Rect wall = maps[selected_map].walls[j];
-                                if (check_collision(bullets[i].prev_x, bullets[i].prev_y, bullets[i].w, bullets[i].h, wall.x, wall.y, wall.w, wall.h)) {
-                                    int ix = (bullets[i].prev_x > wall.x) ? bullets[i].prev_x : wall.x;
-                                    int iy = (bullets[i].prev_y > wall.y) ? bullets[i].prev_y : wall.y;
-                                    int iw = ((bullets[i].prev_x + bullets[i].w < wall.x + wall.w) ? bullets[i].prev_x + bullets[i].w : wall.x + wall.w) - ix;
-                                    int ih = ((bullets[i].prev_y + bullets[i].h < wall.y + wall.h) ? bullets[i].prev_y + bullets[i].h : wall.y + wall.h) - iy;
-                                    if (iw > 0 && ih > 0) {
-                                        draw_arena_rect(ix, iy, iw, ih, COLOR_LIGHTGRAY);
-                                    }
-                                }
-                            }
-                        }
-
                         if (!bullets[i].active) bullets[i].prev_x = -1;
                     }
                 }
@@ -764,7 +759,6 @@ int main(void) {
                 }
             }
 
-            // Localized HUD clears restored to prevent clipping/blind spots
             draw_rect(4, 3, 30, 4, COLOR_RED);
             if (player.health > 0) draw_rect(4, 3, player.health * 6, 4, COLOR_GREEN);
             for (int i = 1; i < 5; i++) draw_rect(4 + (i * 6) - 1, 3, 1, 4, COLOR_BLACK);
