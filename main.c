@@ -107,7 +107,7 @@ MapDef maps[9] = {
     }}
 };
 
-const char* loadouts[5] = { "OPERATOR", "ASSAULT", "ASSASSIN", "NINJA", "SNIPER" };
+const char* loadouts[6] = { "OPERATOR", "ASSAULT", "ASSASSIN", "NINJA", "SNIPER", "HEAVY" };
 
 typedef struct { 
     int x, y, prev_x, prev_y, w, h, dx, dy, health, iframes, weapon, grenades; 
@@ -118,8 +118,9 @@ typedef struct {
 } Player;
 
 typedef struct { int x, y, prev_x, prev_y, w, h, health, type, damage, speed_delay; bool active, slowed; } Zombie;
-typedef struct { int x, y, prev_x, prev_y, dx, dy, w, h, life, dmg; bool active, pierce; uint64_t hit_mask; } Bullet;
-typedef struct { int x, y, timer, state; } Grenade; // 0=off, 1=ticking, 2=exploding, 3=armed trap
+typedef struct { int x, y, prev_x, prev_y, dx, dy, w, h, life, dmg; bool active, pierce, explosive; uint64_t hit_mask; } Bullet;
+typedef struct { int x, y, timer, state, count; } Grenade; // 0=off, 1=ticking, 2=exploding, 3=armed trap, 4=cluster
+typedef struct { int x, y, r, timer; bool active; } Explosion;
 typedef struct { int x, y, type, timer; bool active; } Drop;
 typedef struct { int type, value, max_value; } ActivePowerUp; 
 
@@ -127,6 +128,7 @@ Player player;
 Zombie zombies[MAX_ZOMBIES];
 Bullet bullets[MAX_BULLETS];
 Grenade grenade;
+Explosion explosions[10];
 Drop drops[MAX_DROPS];
 ActivePowerUp active_pups[3];
 
@@ -203,7 +205,7 @@ bool map_collision(int x, int y, int w, int h) {
     return false;
 }
 
-void spawn_bullet(int x, int y, int dx, int dy, int life, int dmg, int w, int h, bool pierce) {
+void spawn_bullet(int x, int y, int dx, int dy, int life, int dmg, int w, int h, bool pierce, bool explosive) {
     for (int i = 0; i < MAX_BULLETS; i++) {
         if (!bullets[i].active) {
             bullets[i].active = true;
@@ -212,8 +214,20 @@ void spawn_bullet(int x, int y, int dx, int dy, int life, int dmg, int w, int h,
             bullets[i].life = life; bullets[i].dmg = dmg;
             bullets[i].w = w; bullets[i].h = h;
             bullets[i].pierce = pierce;
+            bullets[i].explosive = explosive;
             bullets[i].hit_mask = 0;
             bullets[i].prev_x = -1;
+            break;
+        }
+    }
+}
+
+void spawn_explosion(int x, int y, int r, int timer) {
+    for (int i=0; i<10; i++) {
+        if (!explosions[i].active) {
+            explosions[i].active = true;
+            explosions[i].x = x; explosions[i].y = y;
+            explosions[i].r = r; explosions[i].timer = timer;
             break;
         }
     }
@@ -284,22 +298,25 @@ int main(void) {
     void reset_game() {
         player = (Player){120, 142, 120, 142, 6, 6, 0, -1, 5, 0, 0, 2}; 
         
-        // Initialize Ammo Stats based on Loadout
+        // Initialize Ammo Stats based on Loadout (-30 frames standard buff)
         if (selected_loadout == 0) { // Operator
-            player.max_ammo[0] = 20; player.reload_time[0] = 60;
-            player.max_ammo[1] = 15; player.reload_time[1] = 120;
+            player.max_ammo[0] = 30; player.reload_time[0] = 30; // Buffed Ammo & Reload
+            player.max_ammo[1] = 15; player.reload_time[1] = 90;
         } else if (selected_loadout == 1) { // Assault
-            player.max_ammo[0] = 50; player.reload_time[0] = 90;
+            player.max_ammo[0] = 50; player.reload_time[0] = 60;
             player.max_ammo[1] = -1; player.reload_time[1] = -1; // Melee
         } else if (selected_loadout == 2) { // Assassin
-            player.max_ammo[0] = 20; player.reload_time[0] = 90;
-            player.max_ammo[1] = 10; player.reload_time[1] = 150;
+            player.max_ammo[0] = 30; player.reload_time[0] = 60; // Buffed Ammo
+            player.max_ammo[1] = 10; player.reload_time[1] = 120;
         } else if (selected_loadout == 3) { // Ninja
-            player.max_ammo[0] = 40; player.reload_time[0] = 120;
+            player.max_ammo[0] = 40; player.reload_time[0] = 90;
             player.max_ammo[1] = -1; player.reload_time[1] = -1; // Melee
         } else if (selected_loadout == 4) { // Sniper
-            player.max_ammo[0] = 7; player.reload_time[0] = 120;
-            player.max_ammo[1] = 20; player.reload_time[1] = 60;
+            player.max_ammo[0] = 7; player.reload_time[0] = 90;
+            player.max_ammo[1] = 30; player.reload_time[1] = 30; // Buffed Ammo & Reload
+        } else if (selected_loadout == 5) { // Heavy
+            player.max_ammo[0] = 100; player.reload_time[0] = 195; // 3.25 seconds
+            player.max_ammo[1] = 10; player.reload_time[1] = 150; // 2.5 seconds
         }
         
         player.ammo[0] = player.max_ammo[0];
@@ -312,6 +329,7 @@ int main(void) {
         for (int i = 0; i < MAX_ZOMBIES; i++) { zombies[i].active = false; zombies[i].prev_x = -1; zombies[i].slowed = false; }
         for (int i = 0; i < MAX_BULLETS; i++) { bullets[i].active = false; bullets[i].prev_x = -1; }
         for (int i = 0; i < MAX_DROPS; i++) { drops[i].active = false; }
+        for (int i = 0; i < 10; i++) { explosions[i].active = false; }
         for (int i = 0; i < 3; i++) { active_pups[i].type = -1; }
         wave = 1; zombies_to_spawn = 4; zombies_spawned = 0; zombies_alive = 0;
         force_redraw = true;
@@ -335,8 +353,8 @@ int main(void) {
             if (keys_pressed & KEY_B) { game_state = STATE_HOME; force_redraw = true; }
         }
         else if (game_state == STATE_LOADOUT_SELECT) {
-            if (keys_pressed & KEY_UP) { selected_loadout = (selected_loadout - 1 + 5) % 5; force_redraw = true; }
-            if (keys_pressed & KEY_DOWN) { selected_loadout = (selected_loadout + 1) % 5; force_redraw = true; }
+            if (keys_pressed & KEY_UP) { selected_loadout = (selected_loadout - 1 + 6) % 6; force_redraw = true; }
+            if (keys_pressed & KEY_DOWN) { selected_loadout = (selected_loadout + 1) % 6; force_redraw = true; }
             if (keys_pressed & KEY_A) { game_state = STATE_START; force_redraw = true; }
             if (keys_pressed & KEY_B) { game_state = STATE_MAP_SELECT; force_redraw = true; }
         }
@@ -365,9 +383,9 @@ int main(void) {
                 }
             }
 
-            // Reload Trigger (Manual)
+            // Reload Trigger (Manual - Swapped to KEY_B)
             int c_wpn = player.weapon;
-            if ((keys_pressed & KEY_L) && player.max_ammo[c_wpn] != -1 && player.ammo[c_wpn] < player.max_ammo[c_wpn] && player.reload_timer[c_wpn] == 0) {
+            if ((keys_pressed & KEY_B) && player.max_ammo[c_wpn] != -1 && player.ammo[c_wpn] < player.max_ammo[c_wpn] && player.reload_timer[c_wpn] == 0) {
                 player.reload_timer[c_wpn] = player.reload_time[c_wpn];
             }
 
@@ -427,8 +445,8 @@ int main(void) {
                 }
             }
 
-            // GRENADE USE LOGIC
-            if ((keys_pressed & KEY_B) && player.grenades > 0 && grenade.state == 0) {
+            // GRENADE USE LOGIC (Swapped to KEY_L)
+            if ((keys_pressed & KEY_L) && player.grenades > 0 && grenade.state == 0) {
                 player.grenades--;
                 if (selected_loadout == 2) { // Assassin
                     grenade.state = 2; grenade.timer = 10;
@@ -444,6 +462,9 @@ int main(void) {
                     player.iframes = 180;
                 } else if (selected_loadout == 4) { // Sniper Claymore
                     grenade.state = 3; grenade.x = player.x + 1; grenade.y = player.y + 1;
+                } else if (selected_loadout == 5) { // Heavy Cluster Grenade
+                    grenade.state = 4; grenade.timer = 180; grenade.count = 5;
+                    grenade.x = player.x + 2; grenade.y = player.y + 2;
                 } else { // Operator / Assault
                     grenade.state = 1; grenade.timer = 180; 
                     grenade.x = player.x + 2; grenade.y = player.y + 2;
@@ -475,6 +496,28 @@ int main(void) {
                     if (player.iframes == 0 && check_collision(grenade.x - (r/2), grenade.y - (r/2), r, r, player.x, player.y, player.w, player.h)) {
                         if (sh_slot != -1) { active_pups[sh_slot].type = -1; player.iframes = 45; } 
                         else { player.health -= 1; player.iframes = 45; if (player.health <= 0) { game_state = STATE_GAMEOVER; force_redraw = true; } }
+                    }
+                }
+            } else if (grenade.state == 4) { // Cluster Grenade Logic
+                grenade.timer--;
+                if (grenade.timer <= 0) {
+                    spawn_explosion(grenade.x, grenade.y, 30, 8); // Spawn 8 frame visual explosion
+                    for(int z=0; z<MAX_ZOMBIES; z++) {
+                        if (zombies[z].active && check_collision(grenade.x - 15, grenade.y - 15, 30, 30, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
+                            zombies[z].health -= (has_insta ? 100 : 20); 
+                            if (zombies[z].health <= 0) kill_zombie(z);
+                        }
+                    }
+                    if (player.iframes == 0 && check_collision(grenade.x - 15, grenade.y - 15, 30, 30, player.x, player.y, player.w, player.h)) {
+                        if (sh_slot != -1) { active_pups[sh_slot].type = -1; player.iframes = 45; } 
+                        else { player.health -= 1; player.iframes = 45; if (player.health <= 0) { game_state = STATE_GAMEOVER; force_redraw = true; } }
+                    }
+                    
+                    grenade.count--;
+                    if (grenade.count > 0) {
+                        grenade.timer = 60; // Wait 1 second before next cluster pop
+                    } else {
+                        grenade.state = 0; // End cluster
                     }
                 }
             } else if (grenade.state == 2) {
@@ -569,8 +612,8 @@ int main(void) {
                 int pdy = (player.dx == 0 && player.dy == 0) ? -1 : player.dy;
 
                 if (has_biggun) {
-                    spawn_bullet(bx, by, 0, -4, 100, 1, 2, 2, false); spawn_bullet(bx, by, 0, 4, 100, 1, 2, 2, false);
-                    spawn_bullet(bx, by, -4, 0, 100, 1, 2, 2, false); spawn_bullet(bx, by, 4, 0, 100, 1, 2, 2, false);
+                    spawn_bullet(bx, by, 0, -4, 100, 1, 2, 2, false, false); spawn_bullet(bx, by, 0, 4, 100, 1, 2, 2, false, false);
+                    spawn_bullet(bx, by, -4, 0, 100, 1, 2, 2, false, false); spawn_bullet(bx, by, 4, 0, 100, 1, 2, 2, false, false);
                     shoot_cooldown = 6; 
                     active_pups[bg_slot].value -= 4;
                     if (active_pups[bg_slot].value <= 0) active_pups[bg_slot].type = -1;
@@ -578,46 +621,52 @@ int main(void) {
                     if (player.max_ammo[c_wpn] != -1) player.ammo[c_wpn]--;
 
                     if (selected_loadout == 0) { 
-                        if (player.weapon == 0) { spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false); shoot_cooldown = 12; } 
+                        if (player.weapon == 0) { spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false, false); shoot_cooldown = 12; } 
                         else { 
-                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false); 
-                            spawn_bullet(bx, by, pdx*3 + pdy, pdy*3 + pdx, 100, 1, 2, 2, false);
-                            spawn_bullet(bx, by, pdx*3 - pdy, pdy*3 - pdx, 100, 1, 2, 2, false); 
-                            spawn_bullet(bx, by, pdx*2 + pdy, pdy*2 + pdx, 100, 1, 2, 2, false); 
-                            spawn_bullet(bx, by, pdx*2 - pdy, pdy*2 - pdx, 100, 1, 2, 2, false); 
-                            spawn_bullet(bx, by, pdx*2, pdy*2, 100, 1, 2, 2, false);
+                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false, false); 
+                            spawn_bullet(bx, by, pdx*3 + pdy, pdy*3 + pdx, 100, 1, 2, 2, false, false);
+                            spawn_bullet(bx, by, pdx*3 - pdy, pdy*3 - pdx, 100, 1, 2, 2, false, false); 
+                            spawn_bullet(bx, by, pdx*2 + pdy, pdy*2 + pdx, 100, 1, 2, 2, false, false); 
+                            spawn_bullet(bx, by, pdx*2 - pdy, pdy*2 - pdx, 100, 1, 2, 2, false, false); 
+                            spawn_bullet(bx, by, pdx*2, pdy*2, 100, 1, 2, 2, false, false);
                             shoot_cooldown = 35; 
                         }
                     } else if (selected_loadout == 1) { 
                         if (player.weapon == 0) { 
-                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false); shoot_cooldown = 6; 
+                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false, false); shoot_cooldown = 6; 
                         } else { 
-                            spawn_bullet(bx, by, 0, -4, 3, 1, 2, 2, false); spawn_bullet(bx, by, 0, 4, 3, 1, 2, 2, false);
-                            spawn_bullet(bx, by, -4, 0, 3, 1, 2, 2, false); spawn_bullet(bx, by, 4, 0, 3, 1, 2, 2, false);
+                            spawn_bullet(bx, by, 0, -4, 3, 1, 2, 2, false, false); spawn_bullet(bx, by, 0, 4, 3, 1, 2, 2, false, false);
+                            spawn_bullet(bx, by, -4, 0, 3, 1, 2, 2, false, false); spawn_bullet(bx, by, 4, 0, 3, 1, 2, 2, false, false);
                             shoot_cooldown = 6;
                         }
                     } else if (selected_loadout == 2) { 
                         if (player.weapon == 0) { 
-                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false); spawn_bullet(bx, by, -pdx*4, -pdy*4, 100, 1, 2, 2, false);
+                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false, false); spawn_bullet(bx, by, -pdx*4, -pdy*4, 100, 1, 2, 2, false, false);
                             shoot_cooldown = 15;
                         } else { 
                             int bw = (pdx != 0) ? 6 : 2; int bh = (pdy != 0) ? 6 : 2;
-                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 3, bw, bh, false); shoot_cooldown = 30;
+                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 3, bw, bh, false, false); shoot_cooldown = 30;
                         }
                     } else if (selected_loadout == 3) { // Ninja
                         if (player.weapon == 0) {
-                            spawn_bullet(bx, by, 0, -4, 100, 1, 2, 2, false); spawn_bullet(bx, by, 0, 4, 100, 1, 2, 2, false);
-                            spawn_bullet(bx, by, -4, 0, 100, 1, 2, 2, false); spawn_bullet(bx, by, 4, 0, 100, 1, 2, 2, false);
+                            spawn_bullet(bx, by, 0, -4, 100, 1, 2, 2, false, false); spawn_bullet(bx, by, 0, 4, 100, 1, 2, 2, false, false);
+                            spawn_bullet(bx, by, -4, 0, 100, 1, 2, 2, false, false); spawn_bullet(bx, by, 4, 0, 100, 1, 2, 2, false, false);
                             shoot_cooldown = 20;
                         } else {
-                            spawn_bullet(bx, by, pdx*4, pdy*4, 4, 1, 2, 2, false); spawn_bullet(bx, by, -pdx*4, -pdy*4, 4, 1, 2, 2, false);
+                            spawn_bullet(bx, by, pdx*4, pdy*4, 4, 1, 2, 2, false, false); spawn_bullet(bx, by, -pdx*4, -pdy*4, 4, 1, 2, 2, false, false);
                             shoot_cooldown = 6;
                         }
                     } else if (selected_loadout == 4) { // Sniper
                         if (player.weapon == 0) {
-                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 4, 2, 2, true); shoot_cooldown = 50;
+                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 4, 2, 2, true, false); shoot_cooldown = 50;
                         } else {
-                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false); shoot_cooldown = 15;
+                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false, false); shoot_cooldown = 15;
+                        }
+                    } else if (selected_loadout == 5) { // Heavy
+                        if (player.weapon == 0) { // LMG
+                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 1, 2, 2, false, false); shoot_cooldown = 8;
+                        } else { // RPG
+                            spawn_bullet(bx, by, pdx*4, pdy*4, 100, 100, 4, 4, false, true); shoot_cooldown = 50;
                         }
                     }
                 }
@@ -630,26 +679,51 @@ int main(void) {
                 bullets[i].prev_x = bullets[i].x; bullets[i].prev_y = bullets[i].y;
                 bullets[i].x += bullets[i].dx; bullets[i].y += bullets[i].dy;
                 bullets[i].life--;
+                
+                bool hit_wall = map_collision(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h);
+                bool triggered_explosion = false;
 
-                if (bullets[i].life <= 0 || bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH - bullets[i].w || bullets[i].y < HUD_HEIGHT || bullets[i].y > SCREEN_HEIGHT - bullets[i].h || map_collision(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h)) {
+                if (bullets[i].life <= 0 || bullets[i].x < 0 || bullets[i].x > SCREEN_WIDTH - bullets[i].w || bullets[i].y < HUD_HEIGHT || bullets[i].y > SCREEN_HEIGHT - bullets[i].h || hit_wall) {
+                    if (bullets[i].explosive) triggered_explosion = true;
                     bullets[i].active = false;
-                    continue;
                 }
 
-                for (int z = 0; z < MAX_ZOMBIES; z++) {
-                    if (!zombies[z].active) continue;
-                    if (check_collision(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
-                        if (bullets[i].pierce) {
-                            if (bullets[i].hit_mask & (1ULL << z)) continue; // Already hit this zombie, pass through
-                            bullets[i].hit_mask |= (1ULL << z);
-                        } else {
-                            bullets[i].active = false;
-                        }
+                if (bullets[i].active) {
+                    for (int z = 0; z < MAX_ZOMBIES; z++) {
+                        if (!zombies[z].active) continue;
+                        if (check_collision(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
+                            if (bullets[i].explosive) {
+                                triggered_explosion = true;
+                                bullets[i].active = false;
+                            } else if (bullets[i].pierce) {
+                                if (bullets[i].hit_mask & (1ULL << z)) continue; 
+                                bullets[i].hit_mask |= (1ULL << z);
+                            } else {
+                                bullets[i].active = false;
+                            }
 
-                        zombies[z].health -= (has_insta ? 100 : bullets[i].dmg);
-                        if (zombies[z].health <= 0) kill_zombie(z);
-                        
-                        if (!bullets[i].pierce) break; 
+                            zombies[z].health -= (has_insta ? 100 : bullets[i].dmg);
+                            if (zombies[z].health <= 0) kill_zombie(z);
+                            
+                            if (!bullets[i].pierce) break; 
+                        }
+                    }
+                }
+                
+                // RPG Explosion Execution
+                if (triggered_explosion) {
+                    int ex_x = bullets[i].x; int ex_y = bullets[i].y;
+                    spawn_explosion(ex_x, ex_y, 30, 8); // Spawn 8 frame visual explosion
+                    
+                    for(int z=0; z<MAX_ZOMBIES; z++) {
+                        if (zombies[z].active && check_collision(ex_x - 15, ex_y - 15, 30, 30, zombies[z].x, zombies[z].y, zombies[z].w, zombies[z].h)) {
+                            zombies[z].health -= (has_insta ? 100 : 2); // 2 dmg = monkey bomb blast dmg
+                            if (zombies[z].health <= 0) kill_zombie(z);
+                        }
+                    }
+                    if (player.iframes == 0 && check_collision(ex_x - 15, ex_y - 15, 30, 30, player.x, player.y, player.w, player.h)) {
+                        if (sh_slot != -1) { active_pups[sh_slot].type = -1; player.iframes = 45; } 
+                        else { player.health -= 1; player.iframes = 45; if (player.health <= 0) { game_state = STATE_GAMEOVER; force_redraw = true; } }
                     }
                 }
             }
@@ -661,8 +735,8 @@ int main(void) {
 
                 if (!has_freeze) {
                     if (zombie_move_timer % zombies[i].speed_delay == 0) {
-                        int target_x = (grenade.state == 1 && selected_loadout == 0) ? grenade.x : player.x; 
-                        int target_y = (grenade.state == 1 && selected_loadout == 0) ? grenade.y : player.y;
+                        int target_x = ((grenade.state == 1 || grenade.state == 4) && selected_loadout == 0) ? grenade.x : player.x; 
+                        int target_y = ((grenade.state == 1 || grenade.state == 4) && selected_loadout == 0) ? grenade.y : player.y;
 
                         int zmx = 0, zmy = 0;
                         if (zombies[i].x < target_x) zmx = 1;
@@ -752,9 +826,9 @@ int main(void) {
             if (force_redraw) {
                 draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BLACK);
                 draw_text("SELECT LOADOUT", 64, 20, COLOR_RED, 1);
-                for (int i = 0; i < 5; i++) {
-                    draw_text(loadouts[i], 90, 50 + (i * 15), (i == selected_loadout) ? COLOR_YELLOW : COLOR_WHITE, 1);
-                    if (i == selected_loadout) draw_text(">", 75, 50 + (i * 15), COLOR_YELLOW, 1);
+                for (int i = 0; i < 6; i++) {
+                    draw_text(loadouts[i], 90, 45 + (i * 12), (i == selected_loadout) ? COLOR_YELLOW : COLOR_WHITE, 1);
+                    if (i == selected_loadout) draw_text(">", 75, 45 + (i * 12), COLOR_YELLOW, 1);
                 }
                 force_redraw = false;
             }
@@ -857,6 +931,9 @@ int main(void) {
             } else if (selected_loadout == 4) {
                 if (player.weapon == 0) { draw_rect(gun_x, 4, 16, 2, COLOR_DARKGRAY); draw_rect(gun_x, 5, 4, 2, COLOR_ORANGE); } 
                 else { draw_rect(gun_x + 6, 4, 4, 2, COLOR_WHITE); draw_rect(gun_x + 6, 6, 2, 2, COLOR_WHITE); } 
+            } else if (selected_loadout == 5) {
+                if (player.weapon == 0) { draw_rect(gun_x, 4, 16, 3, COLOR_DARKGRAY); draw_rect(gun_x + 6, 7, 4, 3, COLOR_DARKGREEN); } 
+                else { draw_rect(gun_x, 4, 16, 4, COLOR_DARKGREEN); draw_rect(gun_x + 12, 3, 4, 6, COLOR_ORANGE); } 
             }
             
             // Render AMMO indicator next to gun
@@ -888,6 +965,7 @@ int main(void) {
             else if (selected_loadout == 2) g_col = COLOR_CYAN;
             else if (selected_loadout == 3) g_col = COLOR_LIGHTGRAY;
             else if (selected_loadout == 4) g_col = COLOR_YELLOW;
+            else if (selected_loadout == 5) g_col = COLOR_PURPLE;
 
             draw_rect(130, 1, 16, 12, COLOR_BLACK); 
             if (player.grenades >= 1) { draw_rect(135, 8, 4, 4, g_col); draw_rect(136, 7, 2, 1, COLOR_WHITE); }
@@ -927,12 +1005,12 @@ int main(void) {
                 }
             }
 
-            if (grenade.state == 1) {
+            if (grenade.state == 1 || grenade.state == 4) { // Standard ticking or Cluster ticking
                 draw_arena_rect(grenade.x, grenade.y, 2, 2, g_col);
             } else if (grenade.state == 3) {
                 draw_arena_rect(grenade.x, grenade.y, 4, 4, COLOR_YELLOW);
                 draw_arena_rect(grenade.x+1, grenade.y+1, 2, 2, COLOR_RED);
-            } else if (grenade.state == 2) {
+            } else if (grenade.state == 2) { // Render basic grenade explosions immediately (state 2)
                 if (selected_loadout == 2) {
                     draw_arena_rect(0, HUD_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_CYAN); 
                 } else if (selected_loadout == 3) {
@@ -945,8 +1023,27 @@ int main(void) {
                 }
             }
 
+            // Render dynamic explosions (RPG / Cluster Grenade triggers)
+            bool exp_ended = false;
+            for(int e=0; e<10; e++) {
+                 if (explosions[e].active) {
+                     explosions[e].timer--;
+                     if (explosions[e].timer <= 0) {
+                         explosions[e].active = false;
+                         exp_ended = true; // Queue clean up 
+                     } else {
+                         uint16_t c = (explosions[e].timer % 4 > 1) ? COLOR_ORANGE : COLOR_RED;
+                         draw_arena_rect(explosions[e].x - explosions[e].r/2, explosions[e].y - explosions[e].r/2, explosions[e].r, explosions[e].r, c);
+                     }
+                 }
+            }
+            if (exp_ended) force_redraw = true; // Safely wipes the 30x30 scorch marks off walls
+
             for (int i = 0; i < MAX_BULLETS; i++) {
-                if (bullets[i].active) draw_arena_rect(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h, COLOR_WHITE);
+                if (bullets[i].active) {
+                    if (bullets[i].explosive) draw_arena_rect(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h, COLOR_ORANGE);
+                    else draw_arena_rect(bullets[i].x, bullets[i].y, bullets[i].w, bullets[i].h, COLOR_WHITE);
+                }
             }
             
             for (int i = 0; i < MAX_ZOMBIES; i++) {
